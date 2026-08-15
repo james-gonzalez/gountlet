@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
+	"github.com/james-gonzalez/gountlet/internal/sysinfo"
 )
 
 const (
@@ -120,9 +121,52 @@ func Run(dir string) bench.Result {
 	f.Close()
 	readIOPS := float64(ioOps) / readIOPSElapsed.Seconds()
 
-	res.Add("sequential-write", writeMBs, "MB/s")
-	res.Add("sequential-read", readMBs, "MB/s")
-	res.Add("random-write", writeIOPS, "IOPS")
-	res.Add("random-read", readIOPS, "IOPS")
+	res.Add("sequential-write", writeMBs, "MB/s", throughputClass(writeMBs))
+	res.Add("sequential-read", readMBs, "MB/s", throughputClass(readMBs)+" — reads may be inflated by OS page cache")
+	res.Add("random-write", writeIOPS, "IOPS", iopsClass(writeIOPS))
+	res.Add("random-read", readIOPS, "IOPS", iopsClass(readIOPS)+" — reads may be inflated by OS page cache")
+
+	if info := sysinfo.GetDisk(dir); info.Device != "" {
+		res.AddInfo("device", info.Device)
+		if info.Model != "" {
+			res.AddInfo("model", info.Model)
+		}
+		if info.Filesystem != "" {
+			res.AddInfo("filesystem", info.Filesystem)
+		}
+		if info.TotalBytes > 0 {
+			res.AddInfo("capacity", bench.FormatBytes(info.FreeBytes)+" free of "+bench.FormatBytes(info.TotalBytes))
+		}
+	}
 	return res
+}
+
+// throughputClass buckets sequential MB/s against well-established storage
+// technology ranges.
+func throughputClass(mbs float64) string {
+	switch {
+	case mbs < 200:
+		return "HDD-class throughput"
+	case mbs < 600:
+		return "SATA SSD-class throughput"
+	case mbs < 3500:
+		return "NVMe (PCIe Gen3)-class throughput"
+	default:
+		return "NVMe (PCIe Gen4/5)-class throughput"
+	}
+}
+
+// iopsClass buckets random 4K IOPS against well-established storage
+// technology ranges.
+func iopsClass(iops float64) string {
+	switch {
+	case iops < 500:
+		return "HDD-class IOPS"
+	case iops < 50_000:
+		return "SATA SSD-class IOPS"
+	case iops < 500_000:
+		return "NVMe-class IOPS"
+	default:
+		return "high-end NVMe-class IOPS"
+	}
 }

@@ -4,12 +4,15 @@ package cpu
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
+	"github.com/james-gonzalez/gountlet/internal/sysinfo"
 )
 
 // hashWorker hashes a fixed-size buffer in a tight loop until stop fires,
@@ -61,9 +64,17 @@ func Run(duration time.Duration) bench.Result {
 	wg.Wait()
 	multiRate := float64(total) / duration.Seconds() / 1e6
 
+	scaling := multiRate / singleRate
+	efficiency := scaling / float64(n) * 100
+
 	res.Add("cores", float64(n), "count")
 	res.Add("single-core", singleRate, "MH/s")
 	res.Add("multi-core", multiRate, "MH/s")
-	res.Add("scaling", multiRate/singleRate, "x")
+	res.Add("scaling", scaling, "x", fmt.Sprintf("%.0f%% of ideal %dx linear scaling", efficiency, n))
+
+	if info := sysinfo.GetCPU(); info.Model != "" {
+		res.AddInfo("model", info.Model)
+		res.AddInfo("topology", strconv.Itoa(info.PhysicalCores)+" physical / "+strconv.Itoa(info.LogicalCores)+" logical")
+	}
 	return res
 }

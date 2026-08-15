@@ -26,6 +26,21 @@ type selection struct {
 	json                     bool
 }
 
+// stressDuration is how long each timed benchmark runs under -stress.
+const stressDuration = 5 * time.Minute
+
+// explicitlySet reports whether the named flag was passed on the command
+// line, as opposed to left at its default.
+func explicitlySet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func main() {
 	var (
 		all        = flag.Bool("all", false, "run every benchmark")
@@ -36,11 +51,16 @@ func main() {
 		runGPU     = flag.Bool("gpu", false, "run GPU benchmark")
 		asJSON     = flag.Bool("json", false, "output JSON instead of a table")
 		duration   = flag.Duration("duration", 3*time.Second, "how long to run each timed benchmark")
+		stress     = flag.Bool("stress", false, "stress test: run each timed benchmark for a long duration ("+stressDuration.String()+") instead of the default; overridden by an explicit -duration")
 		diskPath   = flag.String("disk-path", "", "directory for the disk benchmark's temp file (default: OS temp dir)")
 		netTarget  = flag.String("net-target", "", "gountlet net-server address to test against (default: local loopback)")
 		serveAddr  = flag.String("net-serve", "", "run only a network benchmark server on this address (e.g. :9494) and block")
 	)
 	flag.Parse()
+
+	if *stress && !explicitlySet("duration") {
+		*duration = stressDuration
+	}
 
 	if *serveAddr != "" {
 		fmt.Printf("gountlet network server listening on %s\n", *serveAddr)

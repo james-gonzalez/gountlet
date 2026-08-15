@@ -154,12 +154,13 @@ func Run() bench.Result {
 		return bench.Fail(name, vkErr("vkCreateInstance", res))
 	}
 
-	physDevice, queueFamily, deviceName, err := pickDevice(c.instance)
+	physDevice, queueFamily, deviceName, discrete, err := pickDevice(c.instance)
 	if err != nil {
 		return bench.Fail(name, err)
 	}
 	c.queueFamily = queueFamily
 	c.deviceName = deviceName
+	vramBytes := deviceLocalMemoryBytes(physDevice)
 
 	if err := c.createDevice(physDevice); err != nil {
 		return bench.Fail(name, err)
@@ -194,25 +195,33 @@ func Run() bench.Result {
 	totalFlops := float64(numElements) * float64(targetIters) * flopsPerFMA
 	gflops := totalFlops / elapsed.Seconds() / 1e9
 
+	deviceKind := "integrated"
+	if discrete {
+		deviceKind = "discrete"
+	}
+
 	res := bench.Result{Name: name}
-	res.Add("compute", gflops, "GFLOPS")
+	res.Add("compute", gflops, "GFLOPS", deviceKind+" GPU")
 	res.AddInfo("device", c.deviceName)
+	if vramBytes > 0 {
+		res.AddInfo("vram", bench.FormatBytes(vramBytes))
+	}
 	return res
 }
 
 // pickDevice enumerates physical devices and returns the first discrete GPU
 // with a compute-capable queue family, falling back to any such device.
-func pickDevice(instance C.VkInstance) (C.VkPhysicalDevice, C.uint32_t, string, error) {
+func pickDevice(instance C.VkInstance) (device C.VkPhysicalDevice, queueFamily C.uint32_t, name string, discrete bool, err error) {
 	var count C.uint32_t
 	if res := C.vkEnumeratePhysicalDevices(instance, &count, nil); res != C.VK_SUCCESS {
-		return nil, 0, "", vkErr("vkEnumeratePhysicalDevices", res)
+		return nil, 0, "", false, vkErr("vkEnumeratePhysicalDevices", res)
 	}
 	if count == 0 {
-		return nil, 0, "", fmt.Errorf("no Vulkan physical devices found")
+		return nil, 0, "", false, fmt.Errorf("no Vulkan physical devices found")
 	}
 	devices := make([]C.VkPhysicalDevice, count)
 	if res := C.vkEnumeratePhysicalDevices(instance, &count, &devices[0]); res != C.VK_SUCCESS {
-		return nil, 0, "", vkErr("vkEnumeratePhysicalDevices", res)
+		return nil, 0, "", false, vkErr("vkEnumeratePhysicalDevices", res)
 	}
 
 	type candidate struct {
@@ -259,9 +268,26 @@ func pickDevice(instance C.VkInstance) (C.VkPhysicalDevice, C.uint32_t, string, 
 	}
 
 	if best == nil {
-		return nil, 0, "", fmt.Errorf("no Vulkan device with a compute queue found")
+		return nil, 0, "", false, fmt.Errorf("no Vulkan device with a compute queue found")
 	}
-	return best.device, best.queueFamily, best.name, nil
+	return best.device, best.queueFamily, best.name, best.discrete, nil
+}
+
+// deviceLocalMemoryBytes sums the memory heaps Vulkan marks device-local —
+// dedicated VRAM on a discrete GPU, or the GPU-reserved portion of system
+// RAM on an integrated one.
+func deviceLocalMemoryBytes(physDevice C.VkPhysicalDevice) uint64 {
+	var memProps C.VkPhysicalDeviceMemoryProperties
+	C.vkGetPhysicalDeviceMemoryProperties(physDevice, &memProps)
+
+	var total uint64
+	for i := C.uint32_t(0); i < memProps.memoryHeapCount; i++ {
+		heap := memProps.memoryHeaps[i]
+		if heap.flags&C.VK_MEMORY_HEAP_DEVICE_LOCAL_BIT != 0 {
+			total += uint64(heap.size)
+		}
+	}
+	return total
 }
 
 func (c *ctx) createDevice(physDevice C.VkPhysicalDevice) error {

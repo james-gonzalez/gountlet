@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
@@ -25,11 +26,21 @@ func Table(w io.Writer, results []bench.Result) {
 			fmt.Fprintf(w, "  error: %s\n", r.Error)
 			continue
 		}
-		for k, v := range r.Info {
-			fmt.Fprintf(w, "  %-16s %s\n", k+":", v)
+		keys := make([]string, 0, len(r.Info))
+		for k := range r.Info {
+			keys = append(keys, k)
 		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(w, "  %-16s %s\n", k+":", r.Info[k])
+		}
+
 		for _, m := range r.Metrics {
-			fmt.Fprintf(w, "  %-16s %s %s\n", m.Name+":", formatValue(m.Value), m.Unit)
+			line := fmt.Sprintf("  %-16s %s %s", m.Name+":", formatValue(m.Value), m.Unit)
+			if m.Context != "" {
+				line += "  (" + m.Context + ")"
+			}
+			fmt.Fprintln(w, line)
 		}
 	}
 }

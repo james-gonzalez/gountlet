@@ -3,9 +3,11 @@
 package memory
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
+	"github.com/james-gonzalez/gountlet/internal/sysinfo"
 )
 
 const bufSize = 512 << 20 // 512 MiB, large enough to blow past L2/L3 cache
@@ -77,10 +79,61 @@ func Run() bench.Result {
 	randomNsPerOp := float64(randomElapsed.Nanoseconds()) / float64(randomOps)
 	sink += sum + uint64(acc)
 
-	res.Add("sequential-write", writeGBs, "GB/s")
-	res.Add("sequential-read", readGBs, "GB/s")
-	res.Add("random-access", randomNsPerOp, "ns/op")
+	res.Add("sequential-write", writeGBs, "GB/s", bandwidthClass(writeGBs))
+	res.Add("sequential-read", readGBs, "GB/s", bandwidthClass(readGBs))
+	res.Add("random-access", randomNsPerOp, "ns/op", latencyClass(randomNsPerOp))
+
+	if info := sysinfo.GetMemory(); info.TotalBytes > 0 {
+		res.AddInfo("installed", bench.FormatBytes(info.TotalBytes))
+		if t := memoryType(info); t != "" {
+			res.AddInfo("type", t)
+		}
+	}
 	return res
+}
+
+// bandwidthClass buckets a single-thread copy/read bandwidth measurement.
+// It's a rough magnitude classification, not a hardware-generation claim —
+// a single Go goroutine won't saturate a multi-channel memory controller
+// the way a STREAM-style benchmark would.
+func bandwidthClass(gbs float64) string {
+	switch {
+	case gbs < 3:
+		return "low single-thread bandwidth"
+	case gbs < 10:
+		return "moderate single-thread bandwidth"
+	case gbs < 20:
+		return "high single-thread bandwidth"
+	default:
+		return "very high single-thread bandwidth"
+	}
+}
+
+// latencyClass buckets random-access latency against DRAM row-hit
+// (~50-70ns) vs row-miss (~90-120ns) latency, which is roughly consistent
+// across DDR generations.
+func latencyClass(ns float64) string {
+	switch {
+	case ns < 70:
+		return "fast, near DRAM row-hit latency"
+	case ns <= 120:
+		return "typical DRAM random-access range"
+	default:
+		return "slower than typical DRAM — possible NUMA or swap effects"
+	}
+}
+
+func memoryType(info sysinfo.Memory) string {
+	switch {
+	case info.Type != "" && info.SpeedMHz > 0:
+		return fmt.Sprintf("%s-%d", info.Type, info.SpeedMHz)
+	case info.Type != "":
+		return info.Type
+	case info.SpeedMHz > 0:
+		return fmt.Sprintf("%d MHz", info.SpeedMHz)
+	default:
+		return ""
+	}
 }
 
 // sink keeps the compiler from proving the read/random-access loops above

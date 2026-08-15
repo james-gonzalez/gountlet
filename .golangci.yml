@@ -111,6 +111,15 @@ linters:
         linters:
           - noctx
 
+      # sysinfo shells out to fixed system tools (df, lsblk, sysctl,
+      # powershell) with args built from resolved local paths/interface
+      # names, not untrusted input — expected for a hardware-info probe,
+      # and there's no cancellation context to plumb through here.
+      - path: internal/sysinfo/
+        linters:
+          - gosec
+          - noctx
+
     paths:
       - vendor
 

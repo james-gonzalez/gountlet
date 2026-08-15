@@ -5,11 +5,14 @@
 package network
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
+	"github.com/james-gonzalez/gountlet/internal/sysinfo"
 )
 
 const (
@@ -61,7 +64,8 @@ func handleConn(conn net.Conn) {
 func Run(target string, duration time.Duration) bench.Result {
 	res := bench.Result{Name: "network"}
 
-	if target == "" {
+	loopback := target == ""
+	if loopback {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return bench.Fail("network", err)
@@ -88,9 +92,46 @@ func Run(target string, duration time.Duration) bench.Result {
 		return bench.Fail("network", err)
 	}
 
-	res.Add("upload", upMbps, "Mbps")
-	res.Add("download", downMbps, "Mbps")
+	res.Add("upload", upMbps, "Mbps", linkClass(upMbps, loopback))
+	res.Add("download", downMbps, "Mbps", linkClass(downMbps, loopback))
+
+	if info := sysinfo.GetNetInterface(); info.Name != "" {
+		res.AddInfo("interface", info.Name)
+		if info.MAC != "" {
+			res.AddInfo("mac", info.MAC)
+		}
+		if len(info.IPs) > 0 {
+			res.AddInfo("address", strings.Join(info.IPs, ", "))
+		}
+		if info.LinkMbps > 0 {
+			res.AddInfo("link-speed", fmt.Sprintf("%d Mbps", info.LinkMbps))
+		}
+	}
 	return res
+}
+
+// linkClass buckets throughput against standard Ethernet link-speed
+// classes. For the default loopback self-test the number reflects the
+// local network stack/memory copy speed, not a real link, so it says so
+// instead of pretending to classify it.
+func linkClass(mbps float64, loopback bool) string {
+	if loopback {
+		return "loopback — not representative of a real network link"
+	}
+	switch {
+	case mbps < 100:
+		return "sub-100Mbps class"
+	case mbps < 1000:
+		return "100Mbps (Fast Ethernet)-class"
+	case mbps < 2500:
+		return "1GbE-class"
+	case mbps < 5000:
+		return "2.5GbE-class"
+	case mbps < 10000:
+		return "5GbE-class"
+	default:
+		return "10GbE+-class"
+	}
 }
 
 // measure sends mode to target, then streams data for duration and returns
