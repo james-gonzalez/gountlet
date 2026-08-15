@@ -55,14 +55,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libvulkan-dev
 
+      # Homebrew's prefix is /opt/homebrew on Apple Silicon runners but
+      # /usr/local on Intel ones, and only /usr/local is in clang's default
+      # search path — so -lvulkan silently fails to link on arm64 unless
+      # pointed at the real prefix explicitly.
       - name: Install Vulkan loader (macOS)
         if: runner.os == 'macOS'
-        run: brew install vulkan-loader molten-vk
+        run: |
+          brew install vulkan-loader molten-vk
+          echo "CGO_CFLAGS=-I$(brew --prefix vulkan-loader)/include" >> "$GITHUB_ENV"
+          echo "CGO_LDFLAGS=-L$(brew --prefix vulkan-loader)/lib" >> "$GITHUB_ENV"
 
-      # Windows cgo needs MinGW-w64 (Go's cgo doesn't support MSVC), and
-      # there's no apt-style package with a MinGW-compatible vulkan-1 import
-      # lib, so one is generated here from the LunarG SDK's DLL. This is the
-      # least battle-tested leg of the pipeline; if it breaks, the error
+      # Windows cgo needs MinGW-w64 (Go's cgo doesn't support MSVC). This is
+      # the least battle-tested leg of the pipeline; if it breaks, the error
       # will be in this step or the "Build" step's linker output.
       - name: Setup MinGW (Windows)
         if: runner.os == 'Windows'
@@ -83,24 +88,17 @@ jobs:
         shell: pwsh
         run: choco install vulkan-sdk --no-progress -y
 
-      - name: Generate vulkan-1 import lib (Windows)
+      # The SDK is built for MSVC users, so it ships a ready-made import
+      # library at Lib\vulkan-1.lib — GNU ld reads MS-format import libs
+      # directly, so mingw can link against it as-is; no need to
+      # reconstruct one from the runtime DLL via gendef/dlltool.
+      - name: Point cgo at the Vulkan SDK (Windows)
         if: runner.os == 'Windows'
-        shell: msys2 {0}
+        shell: bash
         run: |
           set -eu
-          # gendef/dlltool here are the native MINGW64 binutils (not the
-          # msys ones), so they need Windows-style paths — a cygpath -u
-          # POSIX path (/c/VulkanSDK/...) fails to open() under Win32.
           SDK=$(powershell -NoProfile -Command "(Get-ChildItem 'C:\VulkanSDK' -Directory | Select-Object -First 1).FullName" | tr '\\' '/')
-          mkdir -p lib
-          cd lib
-          gendef "$SDK/Bin/vulkan-1.dll"
-          dlltool -d vulkan-1.def -D vulkan-1.dll -l libvulkan-1.a
-          cd ..
-          # $PWD here is the msys2 shell's own POSIX view, so it does need
-          # converting back to a Windows path for the later native build step.
-          LIBDIR=$(cygpath -w "$PWD/lib" | tr '\\' '/')
-          echo "CGO_LDFLAGS=-L$LIBDIR -lvulkan-1" >> "$GITHUB_ENV"
+          echo "CGO_LDFLAGS=-L$SDK/Lib -lvulkan-1" >> "$GITHUB_ENV"
           echo "CGO_CFLAGS=-I$SDK/Include" >> "$GITHUB_ENV"
 
       - name: Build
