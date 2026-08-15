@@ -88,17 +88,20 @@ jobs:
         shell: msys2 {0}
         run: |
           set -eu
-          SDK_WIN=$(powershell -NoProfile -Command "(Get-ChildItem 'C:\VulkanSDK' -Directory | Select-Object -First 1).FullName")
-          SDK=$(cygpath -u "$SDK_WIN")
+          # gendef/dlltool here are the native MINGW64 binutils (not the
+          # msys ones), so they need Windows-style paths — a cygpath -u
+          # POSIX path (/c/VulkanSDK/...) fails to open() under Win32.
+          SDK=$(powershell -NoProfile -Command "(Get-ChildItem 'C:\VulkanSDK' -Directory | Select-Object -First 1).FullName" | tr '\\' '/')
           mkdir -p lib
           cd lib
           gendef "$SDK/Bin/vulkan-1.dll"
           dlltool -d vulkan-1.def -D vulkan-1.dll -l libvulkan-1.a
           cd ..
+          # $PWD here is the msys2 shell's own POSIX view, so it does need
+          # converting back to a Windows path for the later native build step.
           LIBDIR=$(cygpath -w "$PWD/lib" | tr '\\' '/')
-          INCDIR=$(cygpath -w "$SDK/Include" | tr '\\' '/')
           echo "CGO_LDFLAGS=-L$LIBDIR -lvulkan-1" >> "$GITHUB_ENV"
-          echo "CGO_CFLAGS=-I$INCDIR" >> "$GITHUB_ENV"
+          echo "CGO_CFLAGS=-I$SDK/Include" >> "$GITHUB_ENV"
 
       - name: Build
         shell: bash
