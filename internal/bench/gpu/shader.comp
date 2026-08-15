@@ -1,0 +1,21 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer Buf {
+    float data[];
+};
+
+layout(push_constant) uniform Push {
+    uint iterations;
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    float x = data[idx];
+    float y = 1.0000001;
+    for (uint i = 0u; i < pc.iterations; i++) {
+        x = fma(x, y, y);
+    }
+    data[idx] = x;
+}

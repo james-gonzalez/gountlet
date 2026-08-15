@@ -1,0 +1,139 @@
+# Golangci-lint configuration for gountlet
+# Documentation: https://golangci-lint.run/docs/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  go: '1.26'
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+    - gocritic
+    - gosec
+    - bodyclose
+    - noctx
+    - prealloc
+    - gocyclo
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*bufio.Reader).ReadString
+        - io.Copy
+        - os.Remove
+        - (net.Conn).SetDeadline
+        - (*math/rand.Rand).Read
+
+    govet:
+      enable-all: true
+      disable:
+        - shadow
+        # Struct packing doesn't matter for one-off/low-cardinality structs
+        # like ours; not worth reordering fields to chase this.
+        - fieldalignment
+
+    gocyclo:
+      min-complexity: 20
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - experimental
+        - opinionated
+
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+          disabled: false
+        - name: unexported-return
+          severity: warning
+        - name: error-strings
+          severity: warning
+        - name: error-naming
+          severity: warning
+        - name: indent-error-flow
+          severity: warning
+
+    staticcheck:
+      checks: ["all"]
+
+  exclusions:
+    generated: strict
+
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+
+      # cgo-generated code in the Vulkan bindings trips several linters on
+      # patterns that are correct-but-unusual for hand-written Go (malloc'd
+      # pointers passed to C, no error wrapping for driver calls, etc).
+      - path: internal/bench/gpu/gpu_vulkan\.go
+        linters:
+          - gosec
+          - gocritic
+
+      # The disk benchmark opens/reads/writes a path the caller chose
+      # (-disk-path) and uses math/rand (not crypto/rand) for I/O offsets —
+      # both are gosec false positives for a local perf-testing CLI.
+      - path: internal/bench/disk/disk\.go
+        linters:
+          - gosec
+
+      # The network benchmark's TCP calls are deadline-bound, not
+      # context-driven; adding context plumbing here is unneeded.
+      - path: internal/bench/network/network\.go
+        linters:
+          - noctx
+
+    paths:
+      - vendor
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    gofmt:
+      simplify: true
+
+    goimports:
+      local-prefixes:
+        - github.com/james-gonzalez/gountlet
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true

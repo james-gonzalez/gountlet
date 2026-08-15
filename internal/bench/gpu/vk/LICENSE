@@ -1,0 +1,11 @@
+The files in include/vulkan/ (vulkan_core.h, vk_platform.h) are vendored
+verbatim from the Khronos Group's Vulkan-Headers repository:
+
+    https://github.com/KhronosGroup/Vulkan-Headers
+
+Copyright 2015-2026 The Khronos Group Inc.
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+They are redistributed here so that gountlet's GPU benchmark can be built
+with only the Vulkan runtime loader installed, without requiring a full
+Vulkan SDK on the build machine.

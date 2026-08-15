@@ -1,0 +1,144 @@
+name: Build
+
+# Reusable: builds gountlet natively for every OS/arch we ship, with cgo
+# enabled so the GPU benchmark links against a real Vulkan loader. This is
+# NOT cross-compiled from one runner — Vulkan compute needs a real C
+# toolchain + Vulkan headers/loader per target, so each entry in the matrix
+# runs on a runner that natively matches its OS/arch.
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: tar.gz
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            ext: tar.gz
+          - name: darwin-arm64
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+            ext: tar.gz
+          - name: darwin-amd64
+            os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            ext: tar.gz
+          - name: windows-amd64
+            os: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Vulkan loader (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev
+
+      - name: Install Vulkan loader (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vulkan-loader molten-vk
+
+      # Windows cgo needs MinGW-w64 (Go's cgo doesn't support MSVC), and
+      # there's no apt-style package with a MinGW-compatible vulkan-1 import
+      # lib, so one is generated here from the LunarG SDK's DLL. This is the
+      # least battle-tested leg of the pipeline; if it breaks, the error
+      # will be in this step or the "Build" step's linker output.
+      - name: Setup MinGW (Windows)
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+          path-type: inherit
+
+      - name: Add MinGW to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install vulkan-sdk --no-progress -y
+
+      - name: Generate vulkan-1 import lib (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -eu
+          SDK_WIN=$(powershell -NoProfile -Command "(Get-ChildItem 'C:\VulkanSDK' -Directory | Select-Object -First 1).FullName")
+          SDK=$(cygpath -u "$SDK_WIN")
+          mkdir -p lib
+          cd lib
+          gendef "$SDK/Bin/vulkan-1.dll"
+          dlltool -d vulkan-1.def -D vulkan-1.dll -l libvulkan-1.a
+          cd ..
+          LIBDIR=$(cygpath -w "$PWD/lib" | tr '\\' '/')
+          INCDIR=$(cygpath -w "$SDK/Include" | tr '\\' '/')
+          echo "CGO_LDFLAGS=-L$LIBDIR -lvulkan-1" >> "$GITHUB_ENV"
+          echo "CGO_CFLAGS=-I$INCDIR" >> "$GITHUB_ENV"
+
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+        run: |
+          mkdir -p dist
+          out="dist/gountlet"
+          if [ "${{ matrix.goos }}" = "windows" ]; then out="$out.exe"; fi
+          go build -ldflags="-s -w" -o "$out" ./cmd/gountlet
+
+      - name: Smoke test (non-GPU benchmarks)
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: ./dist/gountlet -cpu -mem -disk -duration 500ms
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name="gountlet_${{ matrix.goos }}_${{ matrix.goarch }}"
+          cp README.md LICENSE dist/
+          cd dist
+          tar czf "$name.tar.gz" gountlet README.md LICENSE
+          rm -f gountlet README.md LICENSE
+
+      # Git Bash on the Windows runner doesn't ship a `zip` binary, so this
+      # uses PowerShell's Compress-Archive instead.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "gountlet_${{ matrix.goos }}_${{ matrix.goarch }}"
+          Copy-Item README.md,LICENSE dist/
+          Compress-Archive -Path dist/gountlet.exe,dist/README.md,dist/LICENSE -DestinationPath "dist/$name.zip"
+          Remove-Item dist/gountlet.exe,dist/README.md,dist/LICENSE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          retention-days: 14
