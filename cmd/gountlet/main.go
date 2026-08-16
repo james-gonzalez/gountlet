@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,16 +16,8 @@ import (
 	"github.com/james-gonzalez/gountlet/internal/bench/memory"
 	"github.com/james-gonzalez/gountlet/internal/bench/network"
 	"github.com/james-gonzalez/gountlet/internal/report"
+	"github.com/james-gonzalez/gountlet/internal/tui"
 )
-
-// selection is which benchmarks to run and how, whether it came from flags
-// or the interactive prompt.
-type selection struct {
-	cpu, mem, disk, net, gpu bool
-	duration                 time.Duration
-	diskPath, netTarget      string
-	json                     bool
-}
 
 // stressDuration is how long each timed benchmark runs under -stress.
 const stressDuration = 5 * time.Minute
@@ -55,6 +48,8 @@ func main() {
 		diskPath   = flag.String("disk-path", "", "directory for the disk benchmark's temp file (default: OS temp dir)")
 		netTarget  = flag.String("net-target", "", "gountlet net-server address to test against (default: local loopback)")
 		serveAddr  = flag.String("net-serve", "", "run only a network benchmark server on this address (e.g. :9494) and block")
+		tuiMode    = flag.Bool("tui", false, "show a live terminal dashboard while benchmarks run, with a bar-chart summary at the end")
+		htmlPath   = flag.String("html", "", "also write an HTML report (with charts) to this path")
 	)
 	flag.Parse()
 
@@ -63,62 +58,134 @@ func main() {
 	}
 
 	if *serveAddr != "" {
-		fmt.Printf("gountlet network server listening on %s\n", *serveAddr)
-		if err := network.Serve(*serveAddr); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
+		serveNetwork(*serveAddr)
 		return
 	}
 
-	sel := selection{
-		cpu: *runCPU, mem: *runMemory, disk: *runDisk, net: *runNetwork, gpu: *runGPU,
-		duration: *duration, diskPath: *diskPath, netTarget: *netTarget, json: *asJSON,
+	sel := tui.Selection{
+		CPU: *runCPU, Mem: *runMemory, Disk: *runDisk, Net: *runNetwork, GPU: *runGPU,
+		Duration: *duration, DiskPath: *diskPath, NetTarget: *netTarget, JSON: *asJSON,
 	}
-	anySelected := *all || sel.cpu || sel.mem || sel.disk || sel.net || sel.gpu
+	anySelected := *all || sel.CPU || sel.Mem || sel.Disk || sel.Net || sel.GPU
 
-	switch {
-	case anySelected:
-		if *all {
-			sel.cpu, sel.mem, sel.disk, sel.net, sel.gpu = true, true, true, true, true
+	if !anySelected && isTerminal(os.Stdin) {
+		// Bare invocation in a terminal: the full graphical experience,
+		// setup screen through results, all in one continuous TUI.
+		runGraphical(sel, *htmlPath)
+		return
+	}
+
+	sel = resolveSelection(sel, *all)
+	results, err := runSelected(selectBenchmarks(sel), *tuiMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	writeOutputs(results, *htmlPath, sel.JSON, *tuiMode)
+}
+
+func serveNetwork(addr string) {
+	fmt.Printf("gountlet network server listening on %s\n", addr)
+	if err := network.Serve(addr); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// resolveSelection fills in which benchmarks to run when none were named
+// on the command line: either -all, or the "run everything" default for a
+// piped/scripted invocation (the bare-terminal case is handled separately,
+// before this is called, by the graphical setup screen instead).
+func resolveSelection(sel tui.Selection, all bool) tui.Selection {
+	anySelected := all || sel.CPU || sel.Mem || sel.Disk || sel.Net || sel.GPU
+	if !anySelected || all {
+		sel.CPU, sel.Mem, sel.Disk, sel.Net, sel.GPU = true, true, true, true, true
+	}
+	return sel
+}
+
+// selectBenchmarks builds the run list for sel's selected benchmarks.
+func selectBenchmarks(sel tui.Selection) []tui.NamedBench {
+	var selected []tui.NamedBench
+	if sel.CPU {
+		selected = append(selected, tui.NamedBench{Name: "cpu", Fn: func() bench.Result { return cpu.Run(sel.Duration) }})
+	}
+	if sel.Mem {
+		selected = append(selected, tui.NamedBench{Name: "memory", Fn: func() bench.Result { return memory.Run(sel.Duration) }})
+	}
+	if sel.Disk {
+		selected = append(selected, tui.NamedBench{Name: "disk", Fn: func() bench.Result { return disk.Run(sel.DiskPath, sel.Duration) }})
+	}
+	if sel.Net {
+		selected = append(selected, tui.NamedBench{Name: "network", Fn: func() bench.Result { return network.Run(sel.NetTarget, sel.Duration) }})
+	}
+	if sel.GPU {
+		selected = append(selected, tui.NamedBench{Name: "gpu", Fn: func() bench.Result { return gpu.Run(sel.Duration) }})
+	}
+	return selected
+}
+
+// runGraphical drives the full setup->progress->results TUI for a bare
+// terminal invocation. If bubbletea itself can't run in this terminal, it
+// falls back to the plain text prompt rather than hard-failing; a
+// cancellation (ctrl+c in either) exits quietly.
+func runGraphical(sel tui.Selection, htmlPath string) {
+	defaults := sel
+	defaults.CPU, defaults.Mem, defaults.Disk, defaults.Net, defaults.GPU = true, true, true, true, true
+
+	finalSel, results, err := tui.RunFull(defaults, selectBenchmarks)
+	if err == nil {
+		writeOutputs(results, htmlPath, finalSel.JSON, true)
+		return
+	}
+	if errors.Is(err, tui.ErrCancelled) {
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "tui unavailable, falling back to plain prompt:", err)
+	sel = promptInteractive(sel)
+	results, err = runSelected(selectBenchmarks(sel), false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	writeOutputs(results, htmlPath, sel.JSON, false)
+}
+
+// runSelected runs the selected benchmarks either through the live TUI
+// dashboard or, plainly, one at a time with a "running X..." line each.
+func runSelected(selected []tui.NamedBench, tuiMode bool) ([]bench.Result, error) {
+	if tuiMode {
+		return tui.Run(selected)
+	}
+	results := make([]bench.Result, 0, len(selected))
+	for _, nb := range selected {
+		fmt.Fprintf(os.Stderr, "running %s benchmark...\n", nb.Name)
+		results = append(results, nb.Fn())
+	}
+	return results, nil
+}
+
+// writeOutputs emits the HTML report (if requested) and then the
+// table/JSON results — skipping the plain table when the TUI already
+// displayed a results view.
+func writeOutputs(results []bench.Result, htmlPath string, asJSON, tuiMode bool) {
+	if htmlPath != "" {
+		if err := report.HTML(htmlPath, results); err != nil {
+			fmt.Fprintln(os.Stderr, "error writing html report:", err)
+			os.Exit(1)
 		}
-	case isTerminal(os.Stdin):
-		// No flags given and we're attached to a terminal: ask instead of
-		// silently defaulting to "run everything".
-		sel = promptInteractive(sel)
-	default:
-		// No flags, not a terminal (piped/scripted): keep the old default.
-		sel.cpu, sel.mem, sel.disk, sel.net, sel.gpu = true, true, true, true, true
+		fmt.Fprintf(os.Stderr, "wrote html report to %s\n", htmlPath)
 	}
 
-	var results []bench.Result
-	if sel.cpu {
-		fmt.Fprintln(os.Stderr, "running cpu benchmark...")
-		results = append(results, cpu.Run(sel.duration))
-	}
-	if sel.mem {
-		fmt.Fprintln(os.Stderr, "running memory benchmark...")
-		results = append(results, memory.Run(sel.duration))
-	}
-	if sel.disk {
-		fmt.Fprintln(os.Stderr, "running disk benchmark...")
-		results = append(results, disk.Run(sel.diskPath, sel.duration))
-	}
-	if sel.net {
-		fmt.Fprintln(os.Stderr, "running network benchmark...")
-		results = append(results, network.Run(sel.netTarget, sel.duration))
-	}
-	if sel.gpu {
-		fmt.Fprintln(os.Stderr, "running gpu benchmark...")
-		results = append(results, gpu.Run(sel.duration))
-	}
-
-	if sel.json {
+	if asJSON {
 		if err := report.JSON(os.Stdout, results); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
-	report.Table(os.Stdout, results)
+	if !tuiMode {
+		report.Table(os.Stdout, results)
+	}
 }

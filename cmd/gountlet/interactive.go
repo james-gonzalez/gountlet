@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/james-gonzalez/gountlet/internal/tui"
 )
 
 // isTerminal reports whether f is attached to an interactive terminal
@@ -19,9 +21,10 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// promptInteractive walks the user through picking which benchmarks to run
-// and their options, using defaults from an already-parsed selection.
-func promptInteractive(defaults selection) selection {
+// promptInteractive is the plain-text fallback for when the graphical TUI
+// setup screen (tui.RunFull) can't run in this terminal — walks the user
+// through the same choices one line at a time.
+func promptInteractive(defaults tui.Selection) tui.Selection {
 	r := bufio.NewReader(os.Stdin)
 
 	fmt.Print(banner)
@@ -32,31 +35,31 @@ func promptInteractive(defaults selection) selection {
 	choice := prompt(r, "Benchmarks to run: [a]ll, or comma list of cpu,mem,disk,net,gpu", "all")
 	sel := parseBenchChoice(choice)
 
-	durStr := prompt(r, "Duration for timed benchmarks, in seconds", strconv.FormatFloat(defaults.duration.Seconds(), 'f', -1, 64))
+	durStr := prompt(r, "Duration for timed benchmarks, in seconds", strconv.FormatFloat(defaults.Duration.Seconds(), 'f', -1, 64))
 	if secs, err := strconv.ParseFloat(strings.TrimSpace(durStr), 64); err == nil && secs > 0 {
-		sel.duration = time.Duration(secs * float64(time.Second))
+		sel.Duration = time.Duration(secs * float64(time.Second))
 	} else {
-		sel.duration = defaults.duration
+		sel.Duration = defaults.Duration
 	}
 
-	if sel.disk {
+	if sel.Disk {
 		const def = "OS temp dir"
 		path := prompt(r, "Disk benchmark temp dir", def)
 		if path != def {
-			sel.diskPath = path
+			sel.DiskPath = path
 		}
 	}
 
-	if sel.net {
+	if sel.Net {
 		const def = "loopback self-test"
 		target := prompt(r, "Network target host:port", def)
 		if target != def {
-			sel.netTarget = target
+			sel.NetTarget = target
 		}
 	}
 
 	jsonAns := prompt(r, "Output as JSON instead of a table? (y/N)", "N")
-	sel.json = strings.EqualFold(strings.TrimSpace(jsonAns), "y")
+	sel.JSON = strings.EqualFold(strings.TrimSpace(jsonAns), "y")
 
 	fmt.Println()
 	return sel
@@ -75,32 +78,32 @@ func prompt(r *bufio.Reader, label, def string) string {
 // parseBenchChoice turns a comma/space-separated list of benchmark
 // names/numbers (or "all"/"a"/empty) into a selection with just the
 // cpu/mem/disk/net/gpu booleans set.
-func parseBenchChoice(s string) selection {
+func parseBenchChoice(s string) tui.Selection {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" || s == "a" || s == "all" {
-		return selection{cpu: true, mem: true, disk: true, net: true, gpu: true}
+		return tui.Selection{CPU: true, Mem: true, Disk: true, Net: true, GPU: true}
 	}
 
-	var sel selection
+	var sel tui.Selection
 	for _, tok := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
 		switch tok {
 		case "cpu", "1":
-			sel.cpu = true
+			sel.CPU = true
 		case "mem", "memory", "2":
-			sel.mem = true
+			sel.Mem = true
 		case "disk", "3":
-			sel.disk = true
+			sel.Disk = true
 		case "net", "network", "4":
-			sel.net = true
+			sel.Net = true
 		case "gpu", "5":
-			sel.gpu = true
+			sel.GPU = true
 		}
 	}
 
-	if !sel.cpu && !sel.mem && !sel.disk && !sel.net && !sel.gpu {
+	if !sel.CPU && !sel.Mem && !sel.Disk && !sel.Net && !sel.GPU {
 		// Nothing recognized: fall back to running everything rather than
 		// silently doing nothing.
-		return selection{cpu: true, mem: true, disk: true, net: true, gpu: true}
+		return tui.Selection{CPU: true, Mem: true, Disk: true, Net: true, GPU: true}
 	}
 	return sel
 }

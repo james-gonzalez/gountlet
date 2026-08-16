@@ -113,6 +113,13 @@ linters:
         linters:
           - noctx
 
+      # The HTML report is a shareable summary of benchmark numbers, not
+      # sensitive data — world-readable (0644) is the intended permission,
+      # not a mistake.
+      - path: internal/report/html\.go
+        linters:
+          - gosec
+
       # The unsafe.Slice byte->uint64 reinterpretation in the memory
       # benchmark's read loop is the standard way to make it bandwidth-
       # bound instead of per-byte-loop-overhead-bound; make([]byte, n)'s

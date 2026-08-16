@@ -45,6 +45,75 @@ func Fail(name string, err error) Result {
 	return Result{Name: name, Error: err.Error()}
 }
 
+// ThreadSample is one point in a cpu benchmark's thread-count scaling
+// curve: the throughput a workload achieved running on Threads goroutines.
+type ThreadSample struct {
+	Threads int
+	Value   float64
+	Unit    string
+}
+
+// CPUThreadSeries reconstructs the ordered 1..N thread-count series for a
+// cpu workload (label is "hash" or "fp") from a cpu Result's
+// single-core-<label> / <label>-threads-N / multi-core-<label> metrics —
+// shared by every renderer (tui, HTML report) that wants to chart it,
+// since a Result only carries the flat metric list, not the series shape.
+func CPUThreadSeries(r Result, label string) []ThreadSample {
+	byName := make(map[string]Metric, len(r.Metrics))
+	for _, m := range r.Metrics {
+		byName[m.Name] = m
+	}
+
+	cores := 0
+	if m, ok := byName["cores"]; ok {
+		cores = int(m.Value)
+	}
+
+	var out []ThreadSample
+	if m, ok := byName["single-core-"+label]; ok {
+		out = append(out, ThreadSample{Threads: 1, Value: m.Value, Unit: m.Unit})
+	}
+	for n := 2; n < cores; n *= 2 {
+		if m, ok := byName[fmt.Sprintf("%s-threads-%d", label, n)]; ok {
+			out = append(out, ThreadSample{Threads: n, Value: m.Value, Unit: m.Unit})
+		}
+	}
+	if m, ok := byName["multi-core-"+label]; ok {
+		out = append(out, ThreadSample{Threads: cores, Value: m.Value, Unit: m.Unit})
+	}
+	return out
+}
+
+// unitScales lists, for each base unit a metric might report in, the chain
+// of SI-prefixed units to step through as the value crosses each 1000
+// threshold. Only for display — JSON keeps the original fixed unit so
+// results stay consistent to parse across runs.
+var unitScales = map[string][]string{
+	"MB/s":   {"MB/s", "GB/s", "TB/s"},
+	"GB/s":   {"GB/s", "TB/s"},
+	"IOPS":   {"IOPS", "K IOPS", "M IOPS"},
+	"Mbps":   {"Mbps", "Gbps", "Tbps"},
+	"MH/s":   {"MH/s", "GH/s"},
+	"GFLOPS": {"GFLOPS", "TFLOPS"},
+}
+
+// Humanize steps value up through unitScales[unit] while it's >= 1000 and a
+// larger unit is available, e.g. 10863 "MB/s" -> 10.86 "GB/s". Units not in
+// the table are returned unchanged. Shared by every display renderer
+// (table, HTML report, TUI) so they all scale the same way.
+func Humanize(value float64, unit string) (scaled float64, scaledUnit string) {
+	chain, ok := unitScales[unit]
+	if !ok {
+		return value, unit
+	}
+	i := 0
+	for value >= 1000 && i < len(chain)-1 {
+		value /= 1000
+		i++
+	}
+	return value, chain[i]
+}
+
 // FormatBytes renders a byte count as a human-readable size, e.g. "16.0 GB".
 func FormatBytes(b uint64) string {
 	const unit = 1000
