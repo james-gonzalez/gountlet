@@ -97,8 +97,12 @@ for `-all` is roughly (duration × ~12 phases) — `-stress -all` is a
 
 ## What each benchmark measures
 
-- **cpu** — SHA-256 hashing throughput (MH/s), single goroutine vs. one
-  goroutine per logical core, plus the resulting scaling factor.
+- **cpu** — two workloads: SHA-256 hashing (integer/bitwise, MH/s) and dense
+  matrix multiplication (floating point, GFLOPS). Each runs single-core and
+  all-core for the full duration, plus a thread-scaling curve at
+  intermediate power-of-2 thread counts (a short fixed 500ms sample each,
+  just to show the curve's shape — not held to the same duration as the
+  two endpoints either side of it).
 - **memory** — sequential read/write bandwidth (GB/s) over a 512 MiB buffer,
   plus random-access latency (ns/op) via cache-line-strided pointer chasing.
 - **disk** — sequential write/read throughput (MB/s) and 4K random
@@ -149,10 +153,11 @@ well-established real-world ranges, not an invented precision score:
   (100Mbps/1GbE/2.5GbE/5GbE/10GbE+) — except for the default loopback
   self-test, which is labeled as such instead of pretending to be a real
   link measurement.
-- **cpu** scaling gets an efficiency percentage against ideal linear
-  scaling. The raw MH/s numbers don't get a fabricated "tier" — SHA-256
-  throughput from this specific workload isn't a standardized benchmark
-  with established reference ranges the way memory/disk/network are.
+- **cpu** scaling (both workloads) gets an efficiency percentage against
+  ideal linear scaling. The raw MH/s/GFLOPS numbers don't get a fabricated
+  "tier" — neither this SHA-256 loop nor this naive (non-vectorized) matrix
+  multiply is a standardized benchmark with established reference ranges
+  the way memory/disk/network are.
 - **gpu** compute is labeled integrated vs. discrete (a real fact from the
   Vulkan device properties), not an absolute performance tier for the same
   reason as CPU.
