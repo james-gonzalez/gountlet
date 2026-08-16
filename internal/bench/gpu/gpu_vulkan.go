@@ -55,7 +55,6 @@ const (
 	localSizeX  = 256
 	flopsPerFMA = 2 // one multiply + one add
 	calibIters  = 4000
-	targetSecs  = 1.5
 )
 
 // cnew copies v into newly C.malloc'd memory and returns a pointer to it.
@@ -144,8 +143,9 @@ func vkErr(op string, res C.VkResult) error {
 }
 
 // Run measures GPU compute throughput in GFLOPS using a Vulkan compute
-// shader, plus reports the selected device's name.
-func Run() bench.Result {
+// shader, plus reports the selected device's name. duration is how long
+// the (calibrated) compute dispatch runs for.
+func Run(duration time.Duration) bench.Result {
 	name := "gpu"
 	c := &ctx{}
 	defer c.destroy()
@@ -176,13 +176,13 @@ func Run() bench.Result {
 	}
 
 	// Calibrate: run a small iteration count to estimate iterations/sec,
-	// then scale up to hit roughly targetSecs of GPU work.
+	// then scale up to hit roughly duration of GPU work.
 	calibElapsed, err := c.dispatch(calibIters)
 	if err != nil {
 		return bench.Fail(name, err)
 	}
 	itersPerSec := float64(calibIters) / calibElapsed.Seconds()
-	targetIters := uint32(itersPerSec * targetSecs)
+	targetIters := uint32(itersPerSec * duration.Seconds())
 	if targetIters < calibIters {
 		targetIters = calibIters
 	}

@@ -48,6 +48,15 @@ loopback self-test. `-stress` runs each timed benchmark for 5 minutes instead
 of the default 3 seconds, for burn-in/thermal-throttling checks under
 sustained load rather than a quick snapshot; an explicit `-duration` overrides it.
 
+`-duration`/`-stress` apply to every benchmark, not just CPU: memory and
+disk run at least one full pass over their fixed-size buffer/file and then
+keep repeating (wrapping back to the start, so disk's on-disk footprint
+stays capped at 1 GiB regardless of duration) until the time's up; GPU
+calibrates and scales its dispatch to the requested duration; network already
+worked this way. Since every phase gets the full duration, total run time
+for `-all` is roughly (duration × ~12 phases) — `-stress -all` is a
+~60-minute run by design, not a quick check.
+
 ```sh
 # on machine A
 ./gountlet -net-serve :9494
@@ -63,8 +72,12 @@ sustained load rather than a quick snapshot; an explicit `-duration` overrides i
 - **memory** — sequential read/write bandwidth (GB/s) over a 512 MiB buffer,
   plus random-access latency (ns/op) via cache-line-strided pointer chasing.
 - **disk** — sequential write/read throughput (MB/s) and 4K random
-  read/write IOPS against a temp file. No O_DIRECT (kept portable across all
-  three OSes), so repeated reads may be inflated by the OS page cache.
+  read/write IOPS against a temp file. Reads bypass the OS page cache where
+  the platform/filesystem supports it (O_DIRECT on Linux,
+  `FILE_FLAG_NO_BUFFERING` on Windows, `F_NOCACHE` on macOS) so they reflect
+  real device I/O rather than a cache hit; where that isn't possible (e.g.
+  tmpfs, which has no underlying device to bypass to), it falls back to a
+  normal cached read and the result says so.
 - **network** — TCP upload/download throughput (Mbps). Self-contained by
   default (spins up a loopback server); point it at another machine's
   `-net-serve` for a real link test.
@@ -96,9 +109,8 @@ well-established real-world ranges, not an invented precision score:
   generational meaning into it. Random-access latency is compared against
   the ~50-120ns DRAM range, which holds roughly across DDR generations.
 - **disk** throughput/IOPS are bucketed against HDD / SATA SSD / NVMe
-  Gen3 / NVMe Gen4+ ranges. Read numbers carry an explicit page-cache
-  caveat, since gountlet doesn't use O_DIRECT (see above) and a cached read
-  can easily outrun the real device.
+  Gen3 / NVMe Gen4+ ranges. Read numbers only carry a page-cache caveat when
+  the cache bypass actually fell back to a normal cached read (see above).
 - **network** throughput is bucketed against standard Ethernet link classes
   (100Mbps/1GbE/2.5GbE/5GbE/10GbE+) — except for the default loopback
   self-test, which is labeled as such instead of pretending to be a real

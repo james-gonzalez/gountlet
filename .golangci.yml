@@ -100,8 +100,10 @@ linters:
 
       # The disk benchmark opens/reads/writes a path the caller chose
       # (-disk-path) and uses math/rand (not crypto/rand) for I/O offsets —
-      # both are gosec false positives for a local perf-testing CLI.
-      - path: internal/bench/disk/disk\.go
+      # both are gosec false positives for a local perf-testing CLI. The
+      # unsafe.Pointer use in uncached.go is a standard aligned-buffer trick
+      # for O_DIRECT/no-buffering reads, not a real safety concern.
+      - path: internal/bench/disk/
         linters:
           - gosec
 

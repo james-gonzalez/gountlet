@@ -12,8 +12,14 @@ import (
 
 const bufSize = 512 << 20 // 512 MiB, large enough to blow past L2/L3 cache
 
-// Run measures sequential write/read bandwidth and random-access latency.
-func Run() bench.Result {
+// minRandomOps is the floor on random-access iterations regardless of
+// duration, so a very short -duration still yields a meaningful sample.
+const minRandomOps = 1_000_000
+
+// Run measures sequential write/read bandwidth and random-access latency,
+// each running for at least one full pass and then repeating (to smooth
+// out noise) until duration elapses.
+func Run(duration time.Duration) bench.Result {
 	res := bench.Result{Name: "memory"}
 
 	src := make([]byte, bufSize)
@@ -22,26 +28,35 @@ func Run() bench.Result {
 		src[i] = byte(i)
 	}
 
-	// Sequential write (copy into dst).
+	// Sequential write (copy into dst), repeated until duration elapses.
 	start := time.Now()
-	const writePasses = 4
-	for i := 0; i < writePasses; i++ {
+	var writtenBytes int64
+	for {
 		copy(dst, src)
+		writtenBytes += bufSize
+		if time.Since(start) >= duration {
+			break
+		}
 	}
 	writeElapsed := time.Since(start)
-	writeGBs := float64(bufSize*writePasses) / writeElapsed.Seconds() / 1e9
+	writeGBs := float64(writtenBytes) / writeElapsed.Seconds() / 1e9
 
-	// Sequential read (sum every byte so the compiler can't skip the loop).
+	// Sequential read (sum every byte so the compiler can't skip the loop),
+	// repeated until duration elapses.
 	start = time.Now()
-	const readPasses = 4
 	var sum uint64
-	for i := 0; i < readPasses; i++ {
+	var readBytes int64
+	for {
 		for _, b := range dst {
 			sum += uint64(b)
 		}
+		readBytes += bufSize
+		if time.Since(start) >= duration {
+			break
+		}
 	}
 	readElapsed := time.Since(start)
-	readGBs := float64(bufSize*readPasses) / readElapsed.Seconds() / 1e9
+	readGBs := float64(readBytes) / readElapsed.Seconds() / 1e9
 
 	// Random access: pointer-chase a permutation over 64-byte-strided
 	// indices so each step is a fresh cache line.
@@ -67,13 +82,17 @@ func Run() bench.Result {
 		idx[i], idx[j] = idx[j], idx[i]
 	}
 
-	const randomOps = 4_000_000
 	pos := uint32(0)
 	var acc byte
+	var randomOps int64
 	start = time.Now()
-	for i := 0; i < randomOps; i++ {
+	for {
 		pos = idx[pos]
 		acc += dst[int(pos)*stride]
+		randomOps++
+		if randomOps >= minRandomOps && time.Since(start) >= duration {
+			break
+		}
 	}
 	randomElapsed := time.Since(start)
 	randomNsPerOp := float64(randomElapsed.Nanoseconds()) / float64(randomOps)

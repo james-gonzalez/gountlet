@@ -98,11 +98,11 @@ func main() {
 	}
 	if sel.mem {
 		fmt.Fprintln(os.Stderr, "running memory benchmark...")
-		results = append(results, memory.Run())
+		results = append(results, memory.Run(sel.duration))
 	}
 	if sel.disk {
 		fmt.Fprintln(os.Stderr, "running disk benchmark...")
-		results = append(results, disk.Run(sel.diskPath))
+		results = append(results, disk.Run(sel.diskPath, sel.duration))
 	}
 	if sel.net {
 		fmt.Fprintln(os.Stderr, "running network benchmark...")
@@ -110,7 +110,7 @@ func main() {
 	}
 	if sel.gpu {
 		fmt.Fprintln(os.Stderr, "running gpu benchmark...")
-		results = append(results, gpu.Run())
+		results = append(results, gpu.Run(sel.duration))
 	}
 
 	if sel.json {
