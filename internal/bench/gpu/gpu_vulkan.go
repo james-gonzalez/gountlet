@@ -33,6 +33,32 @@ static VkResult gountlet_create_instance(VkInstance *instance) {
 	ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 	ci.pApplicationInfo = &appInfo;
 
+	// macOS has no native Vulkan driver: MoltenVK translates to Metal, and
+	// it's a "portability subset" ICD. Since Vulkan SDK 1.3.216 the loader
+	// refuses to even consider such ICDs unless the app opts in via
+	// VK_KHR_portability_enumeration + the matching create flag —
+	// otherwise vkCreateInstance fails with VK_ERROR_INCOMPATIBLE_DRIVER
+	// (-9) despite MoltenVK being installed and working. Only enable it
+	// when the loader actually offers it, so this stays a no-op on
+	// Linux/Windows where the extension doesn't exist.
+	uint32_t extCount = 0;
+	vkEnumerateInstanceExtensionProperties(NULL, &extCount, NULL);
+	VkExtensionProperties *exts = NULL;
+	if (extCount > 0) {
+		exts = (VkExtensionProperties *)malloc(sizeof(VkExtensionProperties) * extCount);
+		vkEnumerateInstanceExtensionProperties(NULL, &extCount, exts);
+	}
+	const char *portabilityExt = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+	for (uint32_t i = 0; i < extCount; i++) {
+		if (strcmp(exts[i].extensionName, portabilityExt) == 0) {
+			ci.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+			ci.enabledExtensionCount = 1;
+			ci.ppEnabledExtensionNames = &portabilityExt;
+			break;
+		}
+	}
+	free(exts);
+
 	return vkCreateInstance(&ci, NULL, instance);
 }
 */
