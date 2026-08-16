@@ -20,7 +20,7 @@ const minRandomOps = 1_000_000
 // Run measures sequential write/read bandwidth and random-access latency,
 // each running for at least one full pass and then repeating (to smooth
 // out noise) until duration elapses.
-func Run(duration time.Duration) bench.Result {
+func Run(duration time.Duration, progress bench.ProgressFunc) bench.Result {
 	res := bench.Result{Name: "memory"}
 
 	src := make([]byte, bufSize)
@@ -30,6 +30,7 @@ func Run(duration time.Duration) bench.Result {
 	}
 
 	// Sequential write (copy into dst), repeated until duration elapses.
+	bench.Emit(progress, "sequential-write", false, 0, "")
 	start := time.Now()
 	var writtenBytes int64
 	for {
@@ -41,12 +42,14 @@ func Run(duration time.Duration) bench.Result {
 	}
 	writeElapsed := time.Since(start)
 	writeGBs := float64(writtenBytes) / writeElapsed.Seconds() / 1e9
+	bench.Emit(progress, "sequential-write", true, writeGBs, "GB/s")
 
 	// Sequential read (sum 8 bytes at a time, across 4 independent
 	// accumulators, so the loop can actually saturate memory bandwidth —
 	// a byte-at-a-time loop would just measure per-byte add/bounds-check
 	// overhead, and a single accumulator would serialize on add latency
 	// rather than overlapping loads), repeated until duration elapses.
+	bench.Emit(progress, "sequential-read", false, 0, "")
 	start = time.Now()
 	words := unsafe.Slice((*uint64)(unsafe.Pointer(&dst[0])), bufSize/8)
 	var sum0, sum1, sum2, sum3 uint64
@@ -66,6 +69,7 @@ func Run(duration time.Duration) bench.Result {
 	sum := sum0 + sum1 + sum2 + sum3
 	readElapsed := time.Since(start)
 	readGBs := float64(readBytes) / readElapsed.Seconds() / 1e9
+	bench.Emit(progress, "sequential-read", true, readGBs, "GB/s")
 
 	// Random access: pointer-chase a permutation over 64-byte-strided
 	// indices so each step is a fresh cache line.
@@ -91,6 +95,7 @@ func Run(duration time.Duration) bench.Result {
 		idx[i], idx[j] = idx[j], idx[i]
 	}
 
+	bench.Emit(progress, "random-access", false, 0, "")
 	pos := uint32(0)
 	var acc byte
 	var randomOps int64
@@ -106,6 +111,7 @@ func Run(duration time.Duration) bench.Result {
 	randomElapsed := time.Since(start)
 	randomNsPerOp := float64(randomElapsed.Nanoseconds()) / float64(randomOps)
 	sink += sum + uint64(acc)
+	bench.Emit(progress, "random-access", true, randomNsPerOp, "ns/op")
 
 	res.Add("sequential-write", writeGBs, "GB/s", bandwidthClass(writeGBs))
 	res.Add("sequential-read", readGBs, "GB/s", bandwidthClass(readGBs))

@@ -136,9 +136,15 @@ func intermediateThreadCounts(upTo int) []int {
 // scaling curve (each sampled for the much shorter scalingSampleDuration),
 // adding all of it to res as "single-core-<label>", "multi-core-<label>",
 // "<label>-scaling", and "<label>-threads-<n>" metrics.
-func addWorkload(res *bench.Result, label, unit string, work func(<-chan struct{}) int64, rate func(count int64, d time.Duration) float64, maxThreads int, duration time.Duration) {
+func addWorkload(res *bench.Result, label, unit string, work func(<-chan struct{}) int64, rate func(count int64, d time.Duration) float64, maxThreads int, duration time.Duration, progress bench.ProgressFunc) {
+	bench.Emit(progress, "single-core-"+label, false, 0, "")
 	single := rate(runWorkers(work, 1, duration), duration)
+	bench.Emit(progress, "single-core-"+label, true, single, unit)
+
+	bench.Emit(progress, "multi-core-"+label, false, 0, "")
 	multi := rate(runWorkers(work, maxThreads, duration), duration)
+	bench.Emit(progress, "multi-core-"+label, true, multi, unit)
+
 	scaling := multi / single
 	efficiency := scaling / float64(maxThreads) * 100
 
@@ -146,26 +152,28 @@ func addWorkload(res *bench.Result, label, unit string, work func(<-chan struct{
 	res.Add("multi-core-"+label, multi, unit)
 	res.Add(label+"-scaling", scaling, "x", fmt.Sprintf("%.0f%% of ideal %dx linear scaling", efficiency, maxThreads))
 
+	bench.Emit(progress, label+"-scaling", false, 0, "")
 	for _, threads := range intermediateThreadCounts(maxThreads) {
 		v := rate(runWorkers(work, threads, scalingSampleDuration), scalingSampleDuration)
 		res.Add(fmt.Sprintf("%s-threads-%d", label, threads), v, unit)
 	}
+	bench.Emit(progress, label+"-scaling", true, scaling, "x")
 }
 
 // Run measures single-core, multi-core, and intermediate thread-count
 // throughput for both workloads, for the given duration each (except the
 // intermediate scaling-curve points, which use a fixed shorter duration).
-func Run(duration time.Duration) bench.Result {
+func Run(duration time.Duration, progress bench.ProgressFunc) bench.Result {
 	res := bench.Result{Name: "cpu"}
 	n := runtime.NumCPU()
 
 	addWorkload(&res, "hash", "MH/s", hashWorker, func(count int64, d time.Duration) float64 {
 		return float64(count) / d.Seconds() / 1e6
-	}, n, duration)
+	}, n, duration, progress)
 
 	addWorkload(&res, "fp", "GFLOPS", matmulWorker, func(count int64, d time.Duration) float64 {
 		return float64(count) * flopsPerMatmul / d.Seconds() / 1e9
-	}, n, duration)
+	}, n, duration, progress)
 
 	res.Add("cores", float64(n), "count")
 

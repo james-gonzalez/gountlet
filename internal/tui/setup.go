@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Selection is which benchmarks to run and how — the one config shape
@@ -50,15 +51,23 @@ func newSetupState(defaults Selection) *setupState {
 		jsonOut: defaults.JSON,
 	}
 
+	// bubbles' default PlaceholderStyle hardcodes a fixed ANSI gray
+	// ("240"), same problem as dimStyle above — nearly invisible on a
+	// light-background terminal. Faint(true) instead dims relative to
+	// the terminal's own default foreground.
+	placeholderStyle := lipgloss.NewStyle().Faint(true)
+
 	s.duration = textinput.New()
 	s.duration.Prompt = ""
 	s.duration.Placeholder = fmt.Sprintf("%g", defaults.Duration.Seconds())
+	s.duration.PlaceholderStyle = placeholderStyle
 	s.duration.CharLimit = 16
 	s.duration.Width = 10
 
 	s.diskPath = textinput.New()
 	s.diskPath.Prompt = ""
 	s.diskPath.Placeholder = "OS temp dir"
+	s.diskPath.PlaceholderStyle = placeholderStyle
 	s.diskPath.SetValue(defaults.DiskPath)
 	s.diskPath.CharLimit = 200
 	s.diskPath.Width = 40
@@ -66,6 +75,7 @@ func newSetupState(defaults Selection) *setupState {
 	s.netTarget = textinput.New()
 	s.netTarget.Prompt = ""
 	s.netTarget.Placeholder = "loopback self-test"
+	s.netTarget.PlaceholderStyle = placeholderStyle
 	s.netTarget.SetValue(defaults.NetTarget)
 	s.netTarget.CharLimit = 100
 	s.netTarget.Width = 30
@@ -205,33 +215,116 @@ func (s *setupState) toSelection(defaultDuration time.Duration) Selection {
 	return sel
 }
 
-func (s *setupState) View() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("gountlet") + dimStyle.Render(" — choose what to run"))
-	b.WriteString("\n" + dimStyle.Render("space toggles · enter edits/starts · ctrl+c quits") + "\n\n")
-
-	b.WriteString(s.checkbox(rowCPU, "cpu", s.cpu))
-	b.WriteString(s.checkbox(rowMem, "memory", s.mem))
-	b.WriteString(s.checkbox(rowDisk, "disk", s.disk))
-	b.WriteString(s.checkbox(rowNet, "network", s.net))
-	b.WriteString(s.checkbox(rowGPU, "gpu", s.gpu))
-	b.WriteString("\n")
-
-	b.WriteString(s.field(rowDuration, "duration, seconds", &s.duration))
-	b.WriteString(s.field(rowDiskPath, "disk temp dir     ", &s.diskPath))
-	b.WriteString(s.field(rowNetTarget, "network target    ", &s.netTarget))
-	b.WriteString("\n")
-
-	b.WriteString(s.checkbox(rowJSON, "JSON output", s.jsonOut))
-	b.WriteString("\n")
-
-	if s.cursor == rowStart {
-		b.WriteString(cursorStyle.Render("> Start"))
-	} else {
-		b.WriteString(dimStyle.Render("  Start"))
+// lines renders the setup screen as one string per row (title/subtitle,
+// checkboxes, fields, Start), plus the index of the row under the cursor —
+// so ViewWindowed can keep the cursor in view on a terminal too short to
+// show every row at once, rather than the terminal silently clipping
+// whatever falls past its bottom edge (bubbletea's alt screen doesn't
+// scroll on its own).
+func (s *setupState) lines() (out []string, cursorLine int) {
+	add := func(line string) { out = append(out, line) }
+	mark := func(row int) {
+		if s.cursor == row {
+			cursorLine = len(out)
+		}
 	}
-	b.WriteString("\n")
-	return b.String()
+
+	add(titleStyle.Render("gountlet") + dimStyle.Render(" — choose what to run"))
+	add(dimStyle.Render("space toggles · enter edits/starts · ctrl+c quits"))
+	add("")
+
+	checkboxes := []struct {
+		row     int
+		label   string
+		checked bool
+	}{
+		{rowCPU, "cpu", s.cpu},
+		{rowMem, "memory", s.mem},
+		{rowDisk, "disk", s.disk},
+		{rowNet, "network", s.net},
+		{rowGPU, "gpu", s.gpu},
+	}
+	for _, c := range checkboxes {
+		mark(c.row)
+		add(s.checkbox(c.row, c.label, c.checked))
+	}
+	add("")
+
+	fields := []struct {
+		row   int
+		label string
+		input *textinput.Model
+	}{
+		{rowDuration, "duration, seconds", &s.duration},
+		{rowDiskPath, "disk temp dir     ", &s.diskPath},
+		{rowNetTarget, "network target    ", &s.netTarget},
+	}
+	for _, f := range fields {
+		mark(f.row)
+		add(s.field(f.row, f.label, f.input))
+	}
+	add("")
+
+	mark(rowJSON)
+	add(s.checkbox(rowJSON, "JSON output", s.jsonOut))
+	add("")
+
+	mark(rowStart)
+	if s.cursor == rowStart {
+		add(cursorStyle.Render("> Start"))
+	} else {
+		add(dimStyle.Render("  Start"))
+	}
+	return out, cursorLine
+}
+
+func (s *setupState) View() string {
+	lines, _ := s.lines()
+	return strings.Join(lines, "\n")
+}
+
+// ViewWindowed is View, but clipped to height rows (keeping the cursor's
+// row visible) when the full screen doesn't fit — height <= 0 (size not
+// known yet) renders unclipped. When clipped, the last row is replaced
+// with a "N more above/below" hint rather than content, so it's obvious
+// there's more to scroll to instead of the screen just looking short one
+// option (which is exactly what a silently-clipped terminal looks like).
+func (s *setupState) ViewWindowed(height int) string {
+	lines, cursorLine := s.lines()
+	if height <= 0 || len(lines) <= height {
+		return strings.Join(lines, "\n")
+	}
+	if height < 2 {
+		height = 2
+	}
+	contentHeight := height - 1
+	start := cursorLine - contentHeight/2
+	if start+contentHeight > len(lines) {
+		start = len(lines) - contentHeight
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + contentHeight
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	var indicator string
+	switch {
+	case start > 0 && end < len(lines):
+		indicator = fmt.Sprintf("↑ %d more above · ↓ %d more below", start, len(lines)-end)
+	case start > 0:
+		indicator = fmt.Sprintf("↑ %d more above", start)
+	case end < len(lines):
+		indicator = fmt.Sprintf("↓ %d more below", len(lines)-end)
+	}
+
+	out := strings.Join(lines[start:end], "\n")
+	if indicator != "" {
+		out += "\n" + dimStyle.Render(indicator)
+	}
+	return out
 }
 
 func (s *setupState) checkbox(row int, label string, checked bool) string {
@@ -241,9 +334,9 @@ func (s *setupState) checkbox(row int, label string, checked bool) string {
 	}
 	line := mark + " " + label
 	if s.cursor == row && !s.editing {
-		return cursorStyle.Render("> "+line) + "\n"
+		return cursorStyle.Render("> " + line)
 	}
-	return "  " + line + "\n"
+	return "  " + line
 }
 
 func (s *setupState) field(row int, label string, input *textinput.Model) string {
@@ -251,5 +344,5 @@ func (s *setupState) field(row int, label string, input *textinput.Model) string
 	if s.cursor == row {
 		prefix = cursorStyle.Render("> ")
 	}
-	return fmt.Sprintf("%s%s %s\n", prefix, dimStyle.Render(label+":"), input.View())
+	return fmt.Sprintf("%s%s %s", prefix, dimStyle.Render(label+":"), input.View())
 }

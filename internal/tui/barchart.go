@@ -15,10 +15,14 @@ const (
 )
 
 var (
-	barFilled   = lipgloss.NewStyle().Foreground(lipgloss.Color("#2596a8"))
-	barTrack    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	barLabel    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	barValue    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	barFilled = lipgloss.NewStyle().Foreground(lipgloss.Color("#2596a8"))
+	// barTrack/barLabel/barValue avoid fixed absolute grays (e.g. "240",
+	// "252") in favor of the terminal's own default foreground, plain or
+	// faint — an absolute gray tuned for a dark terminal can be nearly
+	// invisible on a light one, since it isn't relative to the background.
+	barTrack    = lipgloss.NewStyle().Faint(true)
+	barLabel    = lipgloss.NewStyle()
+	barValue    = lipgloss.NewStyle().Faint(true)
 	sectionName = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2596a8"))
 )
 

@@ -61,7 +61,7 @@ func handleConn(conn net.Conn) {
 // Run measures upload and download throughput for duration each against
 // target ("host:port"). If target is empty, a loopback server is started
 // automatically so the benchmark is self-contained.
-func Run(target string, duration time.Duration) bench.Result {
+func Run(target string, duration time.Duration, progress bench.ProgressFunc) bench.Result {
 	res := bench.Result{Name: "network"}
 
 	loopback := target == ""
@@ -83,11 +83,15 @@ func Run(target string, duration time.Duration) bench.Result {
 		target = ln.Addr().String()
 	}
 
+	bench.Emit(progress, "upload", false, 0, "")
 	upMbps, err := measure(target, magicUp, duration)
+	bench.Emit(progress, "upload", true, upMbps, "Mbps")
 	if err != nil {
 		return bench.Fail("network", err)
 	}
+	bench.Emit(progress, "download", false, 0, "")
 	downMbps, err := measure(target, magicDown, duration)
+	bench.Emit(progress, "download", true, downMbps, "Mbps")
 	if err != nil {
 		return bench.Fail("network", err)
 	}

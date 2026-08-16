@@ -108,19 +108,19 @@ func resolveSelection(sel tui.Selection, all bool) tui.Selection {
 func selectBenchmarks(sel tui.Selection) []tui.NamedBench {
 	var selected []tui.NamedBench
 	if sel.CPU {
-		selected = append(selected, tui.NamedBench{Name: "cpu", Fn: func() bench.Result { return cpu.Run(sel.Duration) }})
+		selected = append(selected, tui.NamedBench{Name: "cpu", Fn: func(p bench.ProgressFunc) bench.Result { return cpu.Run(sel.Duration, p) }})
 	}
 	if sel.Mem {
-		selected = append(selected, tui.NamedBench{Name: "memory", Fn: func() bench.Result { return memory.Run(sel.Duration) }})
+		selected = append(selected, tui.NamedBench{Name: "memory", Fn: func(p bench.ProgressFunc) bench.Result { return memory.Run(sel.Duration, p) }})
 	}
 	if sel.Disk {
-		selected = append(selected, tui.NamedBench{Name: "disk", Fn: func() bench.Result { return disk.Run(sel.DiskPath, sel.Duration) }})
+		selected = append(selected, tui.NamedBench{Name: "disk", Fn: func(p bench.ProgressFunc) bench.Result { return disk.Run(sel.DiskPath, sel.Duration, p) }})
 	}
 	if sel.Net {
-		selected = append(selected, tui.NamedBench{Name: "network", Fn: func() bench.Result { return network.Run(sel.NetTarget, sel.Duration) }})
+		selected = append(selected, tui.NamedBench{Name: "network", Fn: func(p bench.ProgressFunc) bench.Result { return network.Run(sel.NetTarget, sel.Duration, p) }})
 	}
 	if sel.GPU {
-		selected = append(selected, tui.NamedBench{Name: "gpu", Fn: func() bench.Result { return gpu.Run(sel.Duration) }})
+		selected = append(selected, tui.NamedBench{Name: "gpu", Fn: func(p bench.ProgressFunc) bench.Result { return gpu.Run(sel.Duration, p) }})
 	}
 	return selected
 }
@@ -161,7 +161,7 @@ func runSelected(selected []tui.NamedBench, tuiMode bool) ([]bench.Result, error
 	results := make([]bench.Result, 0, len(selected))
 	for _, nb := range selected {
 		fmt.Fprintf(os.Stderr, "running %s benchmark...\n", nb.Name)
-		results = append(results, nb.Fn())
+		results = append(results, nb.Fn(nil))
 	}
 	return results, nil
 }

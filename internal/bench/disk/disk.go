@@ -36,7 +36,7 @@ const (
 // around within the same fixed-size file, never growing it) until
 // duration elapses, so the on-disk footprint stays bounded even under a
 // long -stress run.
-func Run(dir string, duration time.Duration) bench.Result {
+func Run(dir string, duration time.Duration, progress bench.ProgressFunc) bench.Result {
 	if dir == "" {
 		dir = os.TempDir()
 	}
@@ -46,11 +46,15 @@ func Run(dir string, duration time.Duration) bench.Result {
 	block := make([]byte, blockSize)
 	rand.New(rand.NewSource(1)).Read(block)
 
+	bench.Emit(progress, "sequential-write", false, 0, "")
 	writeMBs, err := sequentialWrite(path, block, duration)
+	bench.Emit(progress, "sequential-write", true, writeMBs, "MB/s")
 	if err != nil {
 		return bench.Fail("disk", err)
 	}
+	bench.Emit(progress, "sequential-read", false, 0, "")
 	readMBs, seqUncached, err := sequentialRead(path, duration)
+	bench.Emit(progress, "sequential-read", true, readMBs, "MB/s")
 	if err != nil {
 		return bench.Fail("disk", err)
 	}
@@ -60,11 +64,15 @@ func Run(dir string, duration time.Duration) bench.Result {
 	ioBlock := alignedBuffer(ioSize)
 	rng.Read(ioBlock)
 
+	bench.Emit(progress, "random-write", false, 0, "")
 	writeIOPS, writeUncached, err := randomWriteIOPS(path, rng, numBlocks, ioBlock, duration)
+	bench.Emit(progress, "random-write", true, writeIOPS, "IOPS")
 	if err != nil {
 		return bench.Fail("disk", err)
 	}
+	bench.Emit(progress, "random-read", false, 0, "")
 	readIOPS, randUncached, err := randomReadIOPS(path, rng, numBlocks, duration)
+	bench.Emit(progress, "random-read", true, readIOPS, "IOPS")
 	if err != nil {
 		return bench.Fail("disk", err)
 	}

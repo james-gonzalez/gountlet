@@ -54,8 +54,12 @@ itself unavailable and every other benchmark still runs normally (see
 Run `gountlet` bare in a terminal with no flags and it launches a full
 graphical TUI: a setup screen to pick benchmarks/duration/paths (arrow keys
 or j/k to move, space to toggle a checkbox, enter to edit a field or start),
-then a live progress view, then a bar-chart results view (q to quit). Pass
-any flag (or pipe/redirect stdin) and it skips all of that and behaves like
+then a live progress view, then a bar-chart results view (q to quit). The
+progress view shows each benchmark's sub-tests as they run too — e.g. cpu's
+`single-core-hash`/`multi-core-hash`/`hash-scaling` or disk's
+`sequential-write`/`sequential-read`/`random-write`/`random-read` — appearing
+and checking off one at a time instead of one opaque spinner per benchmark.
+Pass any flag (or pipe/redirect stdin) and it skips all of that and behaves like
 a normal CLI, printing a plain table — that's what scripts and CI should do.
 If bubbletea can't run in the attached terminal for some reason, it falls
 back automatically to a plain line-by-line text prompt rather than failing

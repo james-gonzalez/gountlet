@@ -32,6 +32,22 @@ func (r *Result) Add(name string, value float64, unit string, context ...string)
 	r.Metrics = append(r.Metrics, m)
 }
 
+// ProgressFunc reports a benchmark's progress through its named sub-tests
+// as they start and finish, so a caller (e.g. the TUI) can show live
+// per-phase status — and, once a sub-test finishes, its measured value —
+// instead of just "running" for the whole benchmark. value/unit are only
+// meaningful when done is true; callers that don't care pass nil, and
+// benchmark packages call Emit rather than checking for nil themselves at
+// every call site.
+type ProgressFunc func(subtest string, done bool, value float64, unit string)
+
+// Emit calls fn(subtest, done, value, unit) if fn is non-nil.
+func Emit(fn ProgressFunc, subtest string, done bool, value float64, unit string) {
+	if fn != nil {
+		fn(subtest, done, value, unit)
+	}
+}
+
 // AddInfo attaches a non-numeric fact to the result, e.g. a device name.
 func (r *Result) AddInfo(name, value string) {
 	if r.Info == nil {

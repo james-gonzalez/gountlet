@@ -514,7 +514,7 @@ func vkErr(op string, res C.VkResult) error {
 // Run measures GPU compute throughput in GFLOPS using a Vulkan compute
 // shader, plus reports the selected device's name. duration is how long
 // the (calibrated) compute dispatch runs for.
-func Run(duration time.Duration) bench.Result {
+func Run(duration time.Duration, progress bench.ProgressFunc) bench.Result {
 	name := "gpu"
 
 	if C.gountlet_vk_init() == 0 {
@@ -540,6 +540,7 @@ func Run(duration time.Duration) bench.Result {
 	c.timestampPeriod = sel.timestampPeriod
 	vramBytes := deviceLocalMemoryBytes(physDevice)
 
+	bench.Emit(progress, "device-init", false, 0, "")
 	if err := c.createDevice(physDevice); err != nil {
 		return bench.Fail(name, err)
 	}
@@ -552,19 +553,23 @@ func Run(duration time.Duration) bench.Result {
 	if err := c.createCommands(); err != nil {
 		return bench.Fail(name, err)
 	}
+	bench.Emit(progress, "device-init", true, 0, "")
 
 	// Calibrate: run a small iteration count to estimate iterations/sec,
 	// then scale up to hit roughly duration of GPU work.
+	bench.Emit(progress, "calibrating", false, 0, "")
 	calibElapsed, err := c.dispatch(calibIters)
 	if err != nil {
 		return bench.Fail(name, err)
 	}
 	itersPerSec := float64(calibIters) / calibElapsed.Seconds()
+	bench.Emit(progress, "calibrating", true, itersPerSec, "iter/s")
 	targetIters := uint32(itersPerSec * duration.Seconds())
 	if targetIters < calibIters {
 		targetIters = calibIters
 	}
 
+	bench.Emit(progress, "compute", false, 0, "")
 	elapsed, err := c.dispatch(targetIters)
 	if err != nil {
 		return bench.Fail(name, err)
@@ -572,6 +577,7 @@ func Run(duration time.Duration) bench.Result {
 
 	totalFlops := float64(numElements) * float64(targetIters) * flopsPerFMA
 	gflops := totalFlops / elapsed.Seconds() / 1e9
+	bench.Emit(progress, "compute", true, gflops, "GFLOPS")
 
 	deviceKind := "integrated"
 	if sel.discrete {

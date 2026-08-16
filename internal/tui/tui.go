@@ -6,11 +6,13 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
 )
@@ -23,10 +25,12 @@ var ErrCancelled = errors.New("cancelled")
 
 // NamedBench pairs a benchmark's display name with the function that runs
 // it — callers (cmd/gountlet) build these from the selected flags so this
-// package never needs to import the individual bench/* packages.
+// package never needs to import the individual bench/* packages. Fn is
+// handed a bench.ProgressFunc so it can report which sub-test it's
+// currently on; the TUI uses that to show live per-phase status.
 type NamedBench struct {
 	Name string
-	Fn   func() bench.Result
+	Fn   func(bench.ProgressFunc) bench.Result
 }
 
 type phase int
@@ -44,12 +48,24 @@ const (
 	statusDone
 )
 
+// subtest tracks one named phase within a running benchmark (e.g.
+// "sequential-write" within "disk"), as reported live via bench.ProgressFunc.
+// value/unit are only meaningful once status is statusDone.
+type subtest struct {
+	name   string
+	status status
+	value  float64
+	unit   string
+}
+
 type entry struct {
 	name   string
-	fn     func() bench.Result
+	fn     func(bench.ProgressFunc) bench.Result
 	status status
 	result bench.Result
 	start  time.Time
+	subs   []subtest
+	subIdx map[string]int
 }
 
 type tickMsg time.Time
@@ -57,6 +73,18 @@ type tickMsg time.Time
 type benchDoneMsg struct {
 	index  int
 	result bench.Result
+}
+
+// subProgressMsg reports a sub-test starting or finishing within the
+// benchmark at index, sent from that benchmark's goroutine via
+// model.program.Send as it runs — not returned as a tea.Cmd result, since
+// a single Cmd can only deliver one message once it's done.
+type subProgressMsg struct {
+	index int
+	name  string
+	done  bool
+	value float64
+	unit  string
 }
 
 type model struct {
@@ -70,6 +98,9 @@ type model struct {
 	spinnerIdx int
 	done       bool
 	cancelled  bool
+
+	program       *tea.Program
+	width, height int
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -95,8 +126,12 @@ func (m *model) runEntry(i int) tea.Cmd {
 	m.entries[i].status = statusRunning
 	m.entries[i].start = time.Now()
 	fn := m.entries[i].fn
+	program := m.program
 	return func() tea.Msg {
-		return benchDoneMsg{index: i, result: fn()}
+		progress := func(name string, done bool, value float64, unit string) {
+			program.Send(subProgressMsg{index: i, name: name, done: done, value: value, unit: unit})
+		}
+		return benchDoneMsg{index: i, result: fn(progress)}
 	}
 }
 
@@ -105,6 +140,9 @@ func tick() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = wsm.Width, wsm.Height
+	}
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
 		m.cancelled = true
 		return m, tea.Quit
@@ -158,13 +196,33 @@ func (m *model) updateRunning(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.done = true
 		return m, nil
+	case subProgressMsg:
+		e := m.entries[msg.index]
+		if e.subIdx == nil {
+			e.subIdx = make(map[string]int)
+		}
+		if idx, ok := e.subIdx[msg.name]; ok {
+			if msg.done {
+				e.subs[idx].status = statusDone
+				e.subs[idx].value = msg.value
+				e.subs[idx].unit = msg.unit
+			}
+		} else {
+			st := subtest{name: msg.name, status: statusRunning}
+			if msg.done {
+				st.status, st.value, st.unit = statusDone, msg.value, msg.unit
+			}
+			e.subIdx[msg.name] = len(e.subs)
+			e.subs = append(e.subs, st)
+		}
+		return m, nil
 	}
 	return m, nil
 }
 
 func (m *model) View() string {
 	if m.phase == phaseSetup {
-		return m.setup.View()
+		return m.setup.ViewWindowed(m.height)
 	}
 	if m.done {
 		return m.renderResults()
@@ -173,8 +231,12 @@ func (m *model) View() string {
 }
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2596a8"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2596a8"))
+	// dimStyle uses the terminal's own default foreground, faint rather
+	// than an absolute fixed gray — a fixed ANSI color (e.g. "240") reads
+	// fine on a dark terminal but can be nearly invisible on a light one,
+	// since it's not relative to the background the way Faint is.
+	dimStyle     = lipgloss.NewStyle().Faint(true)
 	doneMark     = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("✓")
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2596a8"))
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#2596a8")).Bold(true)
@@ -184,14 +246,26 @@ func (m *model) renderProgress() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("gountlet") + dimStyle.Render(" — running benchmarks (ctrl+c to cancel)"))
 	b.WriteString("\n\n")
+	spinner := spinnerStyle.Render(spinnerFrames[m.spinnerIdx%len(spinnerFrames)])
 	for _, e := range m.entries {
 		switch e.status {
 		case statusDone:
 			fmt.Fprintf(&b, "  %s %s\n", doneMark, e.name)
 		case statusRunning:
-			frame := spinnerStyle.Render(spinnerFrames[m.spinnerIdx%len(spinnerFrames)])
 			elapsed := time.Since(e.start).Round(time.Second)
-			fmt.Fprintf(&b, "  %s %s %s\n", frame, e.name, dimStyle.Render(elapsed.String()))
+			fmt.Fprintf(&b, "  %s %s %s\n", spinner, e.name, dimStyle.Render(elapsed.String()))
+			for _, s := range e.subs {
+				mark := spinner
+				line := dimStyle.Render(s.name)
+				if s.status == statusDone {
+					mark = doneMark
+					if s.unit != "" {
+						v, u := bench.Humanize(s.value, s.unit)
+						line = dimStyle.Render(s.name+"  ") + barValue.Render(formatValue(v)+" "+u)
+					}
+				}
+				fmt.Fprintf(&b, "      %s %s\n", mark, line)
+			}
 		default:
 			fmt.Fprintf(&b, "  %s %s\n", dimStyle.Render("·"), dimStyle.Render(e.name))
 		}
@@ -296,7 +370,17 @@ func RunFull(defaults Selection, build func(Selection) []NamedBench) (Selection,
 }
 
 func runProgram(m *model) ([]bench.Result, error) {
+	// Query the terminal size directly rather than waiting on bubbletea's
+	// own initial tea.WindowSizeMsg — that message isn't delivered
+	// reliably on every platform/terminal, and without a height the setup
+	// screen can't tell it needs to window itself around the cursor,
+	// silently clipping rows past the bottom of a short terminal.
+	if w, h, err := term.GetSize(os.Stdout.Fd()); err == nil {
+		m.width, m.height = w, h
+	}
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	m.program = p
 	final, err := p.Run()
 	if err != nil {
 		return nil, fmt.Errorf("tui: %w", err)
