@@ -19,6 +19,9 @@ jobs:
     name: Release
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -41,6 +44,85 @@ jobs:
         run: sha256sum * > checksums.txt
 
       - name: Run Semantic Release
+        id: semantic
         uses: cycjimmy/semantic-release-action@v6.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v7
+        with:
+          repository: james-gonzalez/homebrew-gountlet
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.release.outputs.new_release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          checksums=$(gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt --output -)
+
+          sha() { echo "$checksums" | grep " $1\$" | cut -d' ' -f1; }
+
+          cat > tap/Formula/gountlet.rb <<EOF
+          class Gountlet < Formula
+            desc "Cross-platform CPU, memory, disk, network, and GPU performance benchmark"
+            homepage "https://github.com/james-gonzalez/gountlet"
+            version "${VERSION}"
+            license "Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/james-gonzalez/gountlet/releases/download/${tag}/gountlet_darwin_arm64.tar.gz"
+                sha256 "$(sha gountlet_darwin_arm64.tar.gz)"
+              end
+              on_intel do
+                url "https://github.com/james-gonzalez/gountlet/releases/download/${tag}/gountlet_darwin_amd64.tar.gz"
+                sha256 "$(sha gountlet_darwin_amd64.tar.gz)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/james-gonzalez/gountlet/releases/download/${tag}/gountlet_linux_arm64.tar.gz"
+                sha256 "$(sha gountlet_linux_arm64.tar.gz)"
+              end
+              on_intel do
+                url "https://github.com/james-gonzalez/gountlet/releases/download/${tag}/gountlet_linux_amd64.tar.gz"
+                sha256 "$(sha gountlet_linux_amd64.tar.gz)"
+              end
+            end
+
+            def install
+              bin.install "gountlet"
+            end
+
+            test do
+              output = shell_output("#{bin}/gountlet -cpu -duration 200ms -json")
+              assert_match "\"name\": \"cpu\"", output
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          git config user.name "gountlet-release-bot"
+          git config user.email "actions@github.com"
+          if git diff --quiet; then
+            echo "Formula already up to date"
+            exit 0
+          fi
+          git add Formula/gountlet.rb
+          git commit -m "chore: update gountlet to v${VERSION}"
+          git push

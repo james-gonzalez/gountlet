@@ -11,6 +11,24 @@ binary with no required runtime dependencies; the GPU benchmark additionally
 uses your system's Vulkan loader if one is installed, and simply reports
 itself unavailable if not.
 
+## Install
+
+**macOS/Linux via Homebrew:**
+
+```sh
+brew tap james-gonzalez/gountlet
+brew install gountlet
+```
+
+Installs a prebuilt binary from the latest [release](https://github.com/james-gonzalez/gountlet/releases) —
+no Go or C toolchain needed. The formula lives in
+[homebrew-gountlet](https://github.com/james-gonzalez/homebrew-gountlet) and
+updates itself automatically on every release.
+
+Otherwise, grab a prebuilt archive from the
+[releases page](https://github.com/james-gonzalez/gountlet/releases) for
+your platform, or build from source below.
+
 ## Build
 
 ```sh
