@@ -52,7 +52,9 @@ jobs:
   update-homebrew-tap:
     name: Update Homebrew tap
     needs: release
-    if: needs.release.outputs.new_release_published == 'true'
+    # Skips cleanly (rather than failing) until HOMEBREW_TAP_TOKEN is added
+    # as a repo secret — see homebrew-gountlet's README for how to mint one.
+    if: needs.release.outputs.new_release_published == 'true' && secrets.HOMEBREW_TAP_TOKEN != ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tap
