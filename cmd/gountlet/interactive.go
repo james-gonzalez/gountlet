@@ -24,6 +24,8 @@ func isTerminal(f *os.File) bool {
 func promptInteractive(defaults selection) selection {
 	r := bufio.NewReader(os.Stdin)
 
+	fmt.Print(banner)
+	fmt.Println()
 	fmt.Println("gountlet interactive setup — press Enter to accept the default in [brackets]")
 	fmt.Println()
 

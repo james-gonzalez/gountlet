@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/gountlet-mark-dark-bg.svg">
+  <img src="assets/gountlet-mark-light-bg.svg" alt="gountlet" width="72" height="72">
+</picture>
+
 # gountlet
 
 Cross-platform (Linux/macOS/Windows) performance benchmark: CPU (single-core
