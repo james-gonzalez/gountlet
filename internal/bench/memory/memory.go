@@ -5,6 +5,7 @@ package memory
 import (
 	"fmt"
 	"time"
+	"unsafe"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
 	"github.com/james-gonzalez/gountlet/internal/sysinfo"
@@ -41,20 +42,28 @@ func Run(duration time.Duration) bench.Result {
 	writeElapsed := time.Since(start)
 	writeGBs := float64(writtenBytes) / writeElapsed.Seconds() / 1e9
 
-	// Sequential read (sum every byte so the compiler can't skip the loop),
-	// repeated until duration elapses.
+	// Sequential read (sum 8 bytes at a time, across 4 independent
+	// accumulators, so the loop can actually saturate memory bandwidth —
+	// a byte-at-a-time loop would just measure per-byte add/bounds-check
+	// overhead, and a single accumulator would serialize on add latency
+	// rather than overlapping loads), repeated until duration elapses.
 	start = time.Now()
-	var sum uint64
+	words := unsafe.Slice((*uint64)(unsafe.Pointer(&dst[0])), bufSize/8)
+	var sum0, sum1, sum2, sum3 uint64
 	var readBytes int64
 	for {
-		for _, b := range dst {
-			sum += uint64(b)
+		for i := 0; i < len(words); i += 4 {
+			sum0 += words[i]
+			sum1 += words[i+1]
+			sum2 += words[i+2]
+			sum3 += words[i+3]
 		}
 		readBytes += bufSize
 		if time.Since(start) >= duration {
 			break
 		}
 	}
+	sum := sum0 + sum1 + sum2 + sum3
 	readElapsed := time.Since(start)
 	readGBs := float64(readBytes) / readElapsed.Seconds() / 1e9
 

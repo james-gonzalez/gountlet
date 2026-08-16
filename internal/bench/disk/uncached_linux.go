@@ -22,3 +22,18 @@ func openUncached(path string) (*os.File, bool) {
 	}
 	return os.NewFile(uintptr(fd), path), true
 }
+
+// openUncachedWrite is openUncached's write-side counterpart: bypasses the
+// page cache so writes (and their real completion time) reflect actual
+// device I/O rather than a write-back cache absorbing them instantly.
+func openUncachedWrite(path string) (*os.File, bool) {
+	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_DIRECT, 0)
+	if err != nil {
+		f, ferr := os.OpenFile(path, os.O_WRONLY, 0o600)
+		if ferr != nil {
+			return nil, false
+		}
+		return f, false
+	}
+	return os.NewFile(uintptr(fd), path), true
+}

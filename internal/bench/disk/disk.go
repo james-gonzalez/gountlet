@@ -1,10 +1,14 @@
 // Package disk benchmarks sequential read/write throughput and 4K random
-// IOPS against a temp file. Writes go through a normal buffered
-// write+fsync, which forces real device I/O regardless of caching. Reads
-// use OS-specific cache bypass (openUncached) so they measure real device
-// I/O too, rather than a page-cache hit; where that isn't available for
-// the filesystem in play (e.g. tmpfs), it falls back to a normal cached
-// read and says so in the result.
+// IOPS against a temp file. Sequential write uses a normal buffered
+// write+fsync — for a GB-scale write that exceeds typical OS dirty-page
+// thresholds, the OS is forced to flush to the real device during the
+// run anyway, so this stays reasonably honest. Random write doesn't have
+// that natural backpressure (its ~80MB working set fits entirely in the
+// write-back cache), so it uses the same cache bypass as reads
+// (openUncached/openUncachedWrite) to measure real device I/O instead of
+// cache-modification speed; where that isn't available for the
+// filesystem in play (e.g. tmpfs), it falls back to a normal cached
+// op and says so in the result.
 package disk
 
 import (
@@ -53,10 +57,10 @@ func Run(dir string, duration time.Duration) bench.Result {
 
 	rng := rand.New(rand.NewSource(2))
 	numBlocks := int64(fileSize / ioSize)
-	ioBlock := make([]byte, ioSize)
+	ioBlock := alignedBuffer(ioSize)
 	rng.Read(ioBlock)
 
-	writeIOPS, err := randomWriteIOPS(path, rng, numBlocks, ioBlock, duration)
+	writeIOPS, writeUncached, err := randomWriteIOPS(path, rng, numBlocks, ioBlock, duration)
 	if err != nil {
 		return bench.Fail("disk", err)
 	}
@@ -70,9 +74,9 @@ func Run(dir string, duration time.Duration) bench.Result {
 
 	res := bench.Result{Name: "disk"}
 	res.Add("sequential-write", writeMBs, "MB/s", storageContext(memoryBacked, throughputClass(writeMBs), ""))
-	res.Add("sequential-read", readMBs, "MB/s", storageContext(memoryBacked, throughputClass(readMBs), readCaveat(seqUncached)))
-	res.Add("random-write", writeIOPS, "IOPS", storageContext(memoryBacked, iopsClass(writeIOPS), ""))
-	res.Add("random-read", readIOPS, "IOPS", storageContext(memoryBacked, iopsClass(readIOPS), readCaveat(randUncached)))
+	res.Add("sequential-read", readMBs, "MB/s", storageContext(memoryBacked, throughputClass(readMBs), cacheCaveat(seqUncached)))
+	res.Add("random-write", writeIOPS, "IOPS", storageContext(memoryBacked, iopsClass(writeIOPS), cacheCaveat(writeUncached)))
+	res.Add("random-read", readIOPS, "IOPS", storageContext(memoryBacked, iopsClass(readIOPS), cacheCaveat(randUncached)))
 
 	if info.Device != "" {
 		res.AddInfo("device", info.Device)
@@ -175,11 +179,14 @@ func sequentialRead(path string, duration time.Duration) (mbs float64, uncached 
 
 // randomWriteIOPS overwrites random ioSize-aligned blocks within path
 // (already sized to fileSize by sequentialWrite) until at least minIOOps
-// have run and duration has elapsed, then fsyncs.
-func randomWriteIOPS(path string, rng *rand.Rand, numBlocks int64, ioBlock []byte, duration time.Duration) (iops float64, err error) {
-	f, err := os.OpenFile(path, os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, err
+// have run and duration has elapsed, bypassing the OS cache where possible
+// (openUncachedWrite) — its ~80MB working set would otherwise be entirely
+// absorbed by the write-back cache, measuring cache-modification speed
+// rather than real device write IOPS.
+func randomWriteIOPS(path string, rng *rand.Rand, numBlocks int64, ioBlock []byte, duration time.Duration) (iops float64, uncached bool, err error) {
+	f, uncached := openUncachedWrite(path)
+	if f == nil {
+		return 0, false, fmt.Errorf("opening %s for write", path)
 	}
 	defer f.Close()
 
@@ -188,7 +195,7 @@ func randomWriteIOPS(path string, rng *rand.Rand, numBlocks int64, ioBlock []byt
 	for {
 		off := rng.Int63n(numBlocks) * ioSize
 		if _, err := f.WriteAt(ioBlock, off); err != nil {
-			return 0, err
+			return 0, uncached, err
 		}
 		ops++
 		if ops >= minIOOps && time.Since(start) >= duration {
@@ -196,10 +203,10 @@ func randomWriteIOPS(path string, rng *rand.Rand, numBlocks int64, ioBlock []byt
 		}
 	}
 	if err := f.Sync(); err != nil {
-		return 0, err
+		return 0, uncached, err
 	}
 	elapsed := time.Since(start)
-	return float64(ops) / elapsed.Seconds(), nil
+	return float64(ops) / elapsed.Seconds(), uncached, nil
 }
 
 // randomReadIOPS reads random ioSize-aligned blocks within path until at
@@ -244,9 +251,9 @@ func throughputClass(mbs float64) string {
 	}
 }
 
-// readCaveat notes when a read result couldn't bypass the OS page cache, so
-// it may be inflated relative to real device throughput.
-func readCaveat(uncached bool) string {
+// cacheCaveat notes when a read/write result couldn't bypass the OS page
+// cache, so it may be inflated relative to real device throughput.
+func cacheCaveat(uncached bool) string {
 	if uncached {
 		return ""
 	}

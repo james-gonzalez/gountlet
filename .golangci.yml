@@ -113,6 +113,14 @@ linters:
         linters:
           - noctx
 
+      # The unsafe.Slice byte->uint64 reinterpretation in the memory
+      # benchmark's read loop is the standard way to make it bandwidth-
+      # bound instead of per-byte-loop-overhead-bound; make([]byte, n)'s
+      # backing array is always at least word-aligned in practice.
+      - path: internal/bench/memory/memory\.go
+        linters:
+          - gosec
+
       # sysinfo shells out to fixed system tools (df, lsblk, sysctl,
       # powershell) with args built from resolved local paths/interface
       # names, not untrusted input — expected for a hardware-info probe,
