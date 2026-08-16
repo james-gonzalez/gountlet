@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="gountlet">
+  <rect x="1" y="1" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="21" y="1" width="18" height="18" fill="#2596a8" opacity="0.55"></rect>
+  <rect x="41" y="1" width="18" height="18" fill="#2596a8" opacity="0.7"></rect>
+  <rect x="61" y="1" width="18" height="18" fill="#2596a8" opacity="0.85"></rect>
+  <rect x="81" y="1" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="1" y="21" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="1" y="41" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="41" y="41" width="18" height="18" fill="#2596a8" opacity="0.7"></rect>
+  <rect x="61" y="41" width="18" height="18" fill="#2596a8" opacity="0.85"></rect>
+  <rect x="81" y="41" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="1" y="61" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="81" y="61" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="1" y="81" width="18" height="18" fill="#2596a8"></rect>
+  <rect x="21" y="81" width="18" height="18" fill="#2596a8" opacity="0.55"></rect>
+  <rect x="41" y="81" width="18" height="18" fill="#2596a8" opacity="0.7"></rect>
+  <rect x="61" y="81" width="18" height="18" fill="#2596a8" opacity="0.85"></rect>
+  <rect x="81" y="81" width="18" height="18" fill="#2596a8"></rect>
+</svg>
