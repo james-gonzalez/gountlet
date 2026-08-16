@@ -15,12 +15,37 @@ binary, no external dependencies at runtime beyond your GPU's Vulkan loader.
 go build ./cmd/gountlet
 ```
 
-Requires a C compiler (`CGO_ENABLED=1`, the default) to build the GPU
-benchmark. Build natively on each target OS — Linux, macOS, and Windows each
-need their own toolchain (gcc/clang, Xcode command line tools, or
-MSVC/mingw-w64 respectively) since cgo cross-compilation isn't practical here.
-If you build with `CGO_ENABLED=0`, everything else still works; the GPU
-benchmark just reports that it needs cgo.
+Requires a C compiler (`CGO_ENABLED=1`, the default) and a Vulkan loader to
+build the GPU benchmark. Build natively on each target OS — Linux, macOS,
+and Windows each need their own toolchain (gcc/clang, Xcode command line
+tools, or MSVC/mingw-w64 respectively) since cgo cross-compilation isn't
+practical here. If you build with `CGO_ENABLED=0`, everything else still
+works; the GPU benchmark just reports that it needs cgo.
+
+**Linux:** install a Vulkan loader dev package, e.g. `sudo apt install
+libvulkan-dev` (Debian/Ubuntu) — it's on the default linker search path, so
+that's all you need.
+
+**macOS:** `brew install vulkan-loader molten-vk`, then point cgo at
+Homebrew's prefix explicitly — on Apple Silicon it's `/opt/homebrew`, which
+isn't in clang's default search path (unlike Intel's `/usr/local`), so
+`-lvulkan` fails to link without this even with the loader installed:
+
+```sh
+export CGO_CFLAGS="-I$(brew --prefix vulkan-loader)/include"
+export CGO_LDFLAGS="-L$(brew --prefix vulkan-loader)/lib"
+go build ./cmd/gountlet
+```
+
+**Windows:** install the [Vulkan SDK](https://vulkan.lunarg.com/) and
+MinGW-w64 (cgo needs gcc, not MSVC), then point cgo at the SDK — adjust the
+version path to whatever you installed:
+
+```powershell
+$env:CGO_CFLAGS = "-IC:\VulkanSDK\1.4.350.0\Include"
+$env:CGO_LDFLAGS = "-LC:\VulkanSDK\1.4.350.0\Lib -lvulkan-1"
+go build ./cmd/gountlet
+```
 
 ## Run
 
