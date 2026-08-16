@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/james-gonzalez/gountlet/internal/bench"
@@ -64,13 +65,16 @@ func Run(dir string, duration time.Duration) bench.Result {
 		return bench.Fail("disk", err)
 	}
 
-	res := bench.Result{Name: "disk"}
-	res.Add("sequential-write", writeMBs, "MB/s", throughputClass(writeMBs))
-	res.Add("sequential-read", readMBs, "MB/s", throughputClass(readMBs)+readCaveat(seqUncached))
-	res.Add("random-write", writeIOPS, "IOPS", iopsClass(writeIOPS))
-	res.Add("random-read", readIOPS, "IOPS", iopsClass(readIOPS)+readCaveat(randUncached))
+	info := sysinfo.GetDisk(dir)
+	memoryBacked := isMemoryBackedFS(info.Filesystem)
 
-	if info := sysinfo.GetDisk(dir); info.Device != "" {
+	res := bench.Result{Name: "disk"}
+	res.Add("sequential-write", writeMBs, "MB/s", storageContext(memoryBacked, throughputClass(writeMBs), ""))
+	res.Add("sequential-read", readMBs, "MB/s", storageContext(memoryBacked, throughputClass(readMBs), readCaveat(seqUncached)))
+	res.Add("random-write", writeIOPS, "IOPS", storageContext(memoryBacked, iopsClass(writeIOPS), ""))
+	res.Add("random-read", readIOPS, "IOPS", storageContext(memoryBacked, iopsClass(readIOPS), readCaveat(randUncached)))
+
+	if info.Device != "" {
 		res.AddInfo("device", info.Device)
 		if info.Model != "" {
 			res.AddInfo("model", info.Model)
@@ -83,6 +87,27 @@ func Run(dir string, duration time.Duration) bench.Result {
 		}
 	}
 	return res
+}
+
+// isMemoryBackedFS reports whether fs is an in-memory filesystem (tmpfs and
+// friends), which has no physical device underneath it to benchmark.
+func isMemoryBackedFS(fs string) bool {
+	switch strings.ToLower(fs) {
+	case "tmpfs", "ramfs", "devtmpfs":
+		return true
+	}
+	return false
+}
+
+// storageContext picks the result context for a disk metric: a plain note
+// that this is RAM, not storage, when on a memory-backed filesystem (any
+// HDD/SSD/NVMe classification would be nonsense there), otherwise the given
+// storage-class label plus any read-cache caveat.
+func storageContext(memoryBacked bool, class, caveat string) string {
+	if memoryBacked {
+		return "in-memory filesystem (tmpfs) — reflects RAM speed, not physical storage"
+	}
+	return class + caveat
 }
 
 // sequentialWrite fills path with repeated block writes (creating it fresh,
