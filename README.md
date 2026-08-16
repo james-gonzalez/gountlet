@@ -115,7 +115,11 @@ for `-all` is roughly (duration × ~12 phases) — `-stress -all` is a
   fused multiply-adds per element and reports GFLOPS, plus the selected
   device's name. Needs the platform's Vulkan runtime loader installed
   (`libvulkan.so.1` / `vulkan-1.dll` / `libvulkan.dylib` via MoltenVK on
-  macOS) — no display or windowing system required.
+  macOS) — no display or windowing system required. Timing uses GPU
+  timestamp queries (pure on-device execution time) where the device
+  supports them, falling back to CPU wall-clock — which also captures
+  some driver/submission overhead — otherwise; the result's `timing`
+  field says which was used.
 
 ## Result context and device info
 

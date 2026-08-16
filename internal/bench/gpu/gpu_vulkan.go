@@ -124,11 +124,20 @@ type ctx struct {
 	commandPool    C.VkCommandPool
 	commandBuffer  C.VkCommandBuffer
 	fence          C.VkFence
+	queryPool      C.VkQueryPool
 	deviceName     string
+	// timestampPeriod is nanoseconds per timestamp tick; 0 means the
+	// device/queue doesn't support timestamp queries, so dispatch falls
+	// back to CPU wall-clock timing (which also captures driver/MoltenVK
+	// submission overhead, not just GPU execution time).
+	timestampPeriod float32
 }
 
 // destroy releases every handle that was successfully created, in reverse order.
 func (c *ctx) destroy() {
+	if c.queryPool != nil {
+		C.vkDestroyQueryPool(c.device, c.queryPool, nil)
+	}
 	if c.fence != nil {
 		C.vkDestroyFence(c.device, c.fence, nil)
 	}
@@ -180,12 +189,14 @@ func Run(duration time.Duration) bench.Result {
 		return bench.Fail(name, vkErr("vkCreateInstance", res))
 	}
 
-	physDevice, queueFamily, deviceName, discrete, err := pickDevice(c.instance)
+	sel, err := pickDevice(c.instance)
 	if err != nil {
 		return bench.Fail(name, err)
 	}
-	c.queueFamily = queueFamily
-	c.deviceName = deviceName
+	physDevice := sel.device
+	c.queueFamily = sel.queueFamily
+	c.deviceName = sel.name
+	c.timestampPeriod = sel.timestampPeriod
 	vramBytes := deviceLocalMemoryBytes(physDevice)
 
 	if err := c.createDevice(physDevice); err != nil {
@@ -222,41 +233,50 @@ func Run(duration time.Duration) bench.Result {
 	gflops := totalFlops / elapsed.Seconds() / 1e9
 
 	deviceKind := "integrated"
-	if discrete {
+	if sel.discrete {
 		deviceKind = "discrete"
 	}
 
 	res := bench.Result{Name: name}
 	res.Add("compute", gflops, "GFLOPS", deviceKind+" GPU")
 	res.AddInfo("device", c.deviceName)
+	if c.timestampPeriod > 0 {
+		res.AddInfo("timing", "GPU timestamp (excludes driver dispatch overhead)")
+	} else {
+		res.AddInfo("timing", "CPU wall-clock (device has no timestamp query support; includes some driver dispatch overhead)")
+	}
 	if vramBytes > 0 {
 		res.AddInfo("vram", bench.FormatBytes(vramBytes))
 	}
 	return res
 }
 
+// selectedDevice bundles everything Run needs about the chosen physical
+// device and its compute queue family.
+type selectedDevice struct {
+	device          C.VkPhysicalDevice
+	queueFamily     C.uint32_t
+	name            string
+	discrete        bool
+	timestampPeriod float32 // nanoseconds per timestamp tick; 0 if the device/queue can't do timestamp queries
+}
+
 // pickDevice enumerates physical devices and returns the first discrete GPU
 // with a compute-capable queue family, falling back to any such device.
-func pickDevice(instance C.VkInstance) (device C.VkPhysicalDevice, queueFamily C.uint32_t, name string, discrete bool, err error) {
+func pickDevice(instance C.VkInstance) (selectedDevice, error) {
 	var count C.uint32_t
 	if res := C.vkEnumeratePhysicalDevices(instance, &count, nil); res != C.VK_SUCCESS {
-		return nil, 0, "", false, vkErr("vkEnumeratePhysicalDevices", res)
+		return selectedDevice{}, vkErr("vkEnumeratePhysicalDevices", res)
 	}
 	if count == 0 {
-		return nil, 0, "", false, fmt.Errorf("no Vulkan physical devices found")
+		return selectedDevice{}, fmt.Errorf("no Vulkan physical devices found")
 	}
 	devices := make([]C.VkPhysicalDevice, count)
 	if res := C.vkEnumeratePhysicalDevices(instance, &count, &devices[0]); res != C.VK_SUCCESS {
-		return nil, 0, "", false, vkErr("vkEnumeratePhysicalDevices", res)
+		return selectedDevice{}, vkErr("vkEnumeratePhysicalDevices", res)
 	}
 
-	type candidate struct {
-		device      C.VkPhysicalDevice
-		queueFamily C.uint32_t
-		name        string
-		discrete    bool
-	}
-	var best *candidate
+	var best *selectedDevice
 
 	for _, d := range devices {
 		var props C.VkPhysicalDeviceProperties
@@ -281,11 +301,17 @@ func pickDevice(instance C.VkInstance) (device C.VkPhysicalDevice, queueFamily C
 			continue
 		}
 
-		cand := candidate{
-			device:      d,
-			queueFamily: C.uint32_t(familyIdx),
-			name:        C.GoString(&props.deviceName[0]),
-			discrete:    props.deviceType == C.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+		var timestampPeriod float32
+		if props.limits.timestampComputeAndGraphics != C.VK_FALSE && qProps[familyIdx].timestampValidBits > 0 {
+			timestampPeriod = float32(props.limits.timestampPeriod)
+		}
+
+		cand := selectedDevice{
+			device:          d,
+			queueFamily:     C.uint32_t(familyIdx),
+			name:            C.GoString(&props.deviceName[0]),
+			discrete:        props.deviceType == C.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+			timestampPeriod: timestampPeriod,
 		}
 		if best == nil || (cand.discrete && !best.discrete) {
 			c := cand
@@ -294,9 +320,9 @@ func pickDevice(instance C.VkInstance) (device C.VkPhysicalDevice, queueFamily C
 	}
 
 	if best == nil {
-		return nil, 0, "", false, fmt.Errorf("no Vulkan device with a compute queue found")
+		return selectedDevice{}, fmt.Errorf("no Vulkan device with a compute queue found")
 	}
-	return best.device, best.queueFamily, best.name, best.discrete, nil
+	return *best, nil
 }
 
 // deviceLocalMemoryBytes sums the memory heaps Vulkan marks device-local —
@@ -524,6 +550,16 @@ func (c *ctx) createCommands() error {
 	if res := C.vkCreateFence(c.device, &fci, nil, &c.fence); res != C.VK_SUCCESS {
 		return vkErr("vkCreateFence", res)
 	}
+
+	if c.timestampPeriod > 0 {
+		var qpci C.VkQueryPoolCreateInfo
+		qpci.sType = C.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO
+		qpci.queryType = C.VK_QUERY_TYPE_TIMESTAMP
+		qpci.queryCount = 2
+		if res := C.vkCreateQueryPool(c.device, &qpci, nil, &c.queryPool); res != C.VK_SUCCESS {
+			return vkErr("vkCreateQueryPool", res)
+		}
+	}
 	return nil
 }
 
@@ -544,11 +580,21 @@ func (c *ctx) dispatch(iterations uint32) (time.Duration, error) {
 		return 0, vkErr("vkBeginCommandBuffer", res)
 	}
 
+	useTimestamps := c.queryPool != nil
+	if useTimestamps {
+		C.vkCmdResetQueryPool(c.commandBuffer, c.queryPool, 0, 2)
+		C.vkCmdWriteTimestamp(c.commandBuffer, C.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, c.queryPool, 0)
+	}
+
 	C.vkCmdBindPipeline(c.commandBuffer, C.VK_PIPELINE_BIND_POINT_COMPUTE, c.pipeline)
 	C.vkCmdBindDescriptorSets(c.commandBuffer, C.VK_PIPELINE_BIND_POINT_COMPUTE, c.pipelineLayout, 0, 1, &c.descriptorSet, 0, nil)
 	itersC := C.uint32_t(iterations)
 	C.vkCmdPushConstants(c.commandBuffer, c.pipelineLayout, C.VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, unsafe.Pointer(&itersC))
 	C.vkCmdDispatch(c.commandBuffer, C.uint32_t(numElements/localSizeX), 1, 1)
+
+	if useTimestamps {
+		C.vkCmdWriteTimestamp(c.commandBuffer, C.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, c.queryPool, 1)
+	}
 
 	if res := C.vkEndCommandBuffer(c.commandBuffer); res != C.VK_SUCCESS {
 		return 0, vkErr("vkEndCommandBuffer", res)
@@ -568,6 +614,21 @@ func (c *ctx) dispatch(iterations uint32) (time.Duration, error) {
 	}
 	if res := C.vkWaitForFences(c.device, 1, &c.fence, C.VK_TRUE, ^C.uint64_t(0)); res != C.VK_SUCCESS {
 		return 0, vkErr("vkWaitForFences", res)
+	}
+
+	if useTimestamps {
+		var timestamps [2]C.uint64_t
+		res := C.vkGetQueryPoolResults(
+			c.device, c.queryPool, 0, 2,
+			C.size_t(unsafe.Sizeof(timestamps)), unsafe.Pointer(&timestamps[0]), C.VkDeviceSize(8),
+			C.VK_QUERY_RESULT_64_BIT|C.VK_QUERY_RESULT_WAIT_BIT,
+		)
+		if res == C.VK_SUCCESS {
+			ticks := uint64(timestamps[1] - timestamps[0])
+			return time.Duration(float64(ticks) * float64(c.timestampPeriod)), nil
+		}
+		// Fall through to wall-clock timing below if the query somehow
+		// failed despite the device claiming timestamp support.
 	}
 	return time.Since(start), nil
 }
