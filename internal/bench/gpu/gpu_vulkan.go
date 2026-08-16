@@ -2,21 +2,355 @@
 
 // Package gpu benchmarks GPU compute throughput by dispatching a Vulkan
 // compute shader that performs a large number of fused multiply-adds and
-// timing the dispatch. It links directly against the system's Vulkan
-// loader (libvulkan.so.1 / vulkan-1.dll / libvulkan.dylib), so no display
-// or windowing system is required. The Vulkan headers are vendored under
-// vk/include (see vk/LICENSE) so the build needs only the loader, not a
-// full Vulkan SDK.
+// timing the dispatch. The Vulkan loader (libvulkan.so.1 / vulkan-1.dll /
+// libvulkan.dylib) is loaded dynamically at runtime (dlopen/LoadLibrary),
+// not linked at build time, so a machine without it installed can still
+// run gountlet for every other benchmark instead of failing to start at
+// all. The Vulkan headers are vendored under vk/include (see vk/LICENSE)
+// so building needs only a C compiler, no Vulkan SDK, on any platform. No
+// display or windowing system is required to run the benchmark itself.
 package gpu
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/vk/include
-#cgo linux LDFLAGS: -lvulkan
-#cgo darwin LDFLAGS: -lvulkan
-#cgo windows LDFLAGS: -lvulkan-1
+#cgo linux LDFLAGS: -ldl
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+typedef HMODULE gountlet_lib_t;
+static gountlet_lib_t gountlet_dlopen(void) {
+	return LoadLibraryA("vulkan-1.dll");
+}
+static void *gountlet_dlsym(gountlet_lib_t lib, const char *name) {
+	return (void *)GetProcAddress(lib, name);
+}
+static void gountlet_dlclose(gountlet_lib_t lib) {
+	FreeLibrary(lib);
+}
+#else
+#include <dlfcn.h>
+typedef void *gountlet_lib_t;
+static gountlet_lib_t gountlet_dlopen(void) {
+#ifdef __APPLE__
+	gountlet_lib_t h = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+	if (!h) h = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL);
+	return h;
+#else
+	return dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
+}
+static void *gountlet_dlsym(gountlet_lib_t lib, const char *name) {
+	return dlsym(lib, name);
+}
+static void gountlet_dlclose(gountlet_lib_t lib) {
+	dlclose(lib);
+}
+#endif
+
+// ---- pfn storage ----
+static PFN_vkGetInstanceProcAddr pfn_vkGetInstanceProcAddr;
+static PFN_vkCreateInstance pfn_vkCreateInstance;
+static PFN_vkEnumerateInstanceExtensionProperties pfn_vkEnumerateInstanceExtensionProperties;
+static PFN_vkDestroyInstance pfn_vkDestroyInstance;
+static PFN_vkEnumeratePhysicalDevices pfn_vkEnumeratePhysicalDevices;
+static PFN_vkGetPhysicalDeviceProperties pfn_vkGetPhysicalDeviceProperties;
+static PFN_vkGetPhysicalDeviceQueueFamilyProperties pfn_vkGetPhysicalDeviceQueueFamilyProperties;
+static PFN_vkGetPhysicalDeviceMemoryProperties pfn_vkGetPhysicalDeviceMemoryProperties;
+static PFN_vkCreateDevice pfn_vkCreateDevice;
+static PFN_vkGetDeviceProcAddr pfn_vkGetDeviceProcAddr;
+static PFN_vkGetDeviceQueue pfn_vkGetDeviceQueue;
+static PFN_vkDestroyDevice pfn_vkDestroyDevice;
+static PFN_vkCreateBuffer pfn_vkCreateBuffer;
+static PFN_vkDestroyBuffer pfn_vkDestroyBuffer;
+static PFN_vkGetBufferMemoryRequirements pfn_vkGetBufferMemoryRequirements;
+static PFN_vkAllocateMemory pfn_vkAllocateMemory;
+static PFN_vkFreeMemory pfn_vkFreeMemory;
+static PFN_vkBindBufferMemory pfn_vkBindBufferMemory;
+static PFN_vkMapMemory pfn_vkMapMemory;
+static PFN_vkUnmapMemory pfn_vkUnmapMemory;
+static PFN_vkCreateShaderModule pfn_vkCreateShaderModule;
+static PFN_vkDestroyShaderModule pfn_vkDestroyShaderModule;
+static PFN_vkCreateDescriptorSetLayout pfn_vkCreateDescriptorSetLayout;
+static PFN_vkDestroyDescriptorSetLayout pfn_vkDestroyDescriptorSetLayout;
+static PFN_vkCreatePipelineLayout pfn_vkCreatePipelineLayout;
+static PFN_vkDestroyPipelineLayout pfn_vkDestroyPipelineLayout;
+static PFN_vkCreateComputePipelines pfn_vkCreateComputePipelines;
+static PFN_vkDestroyPipeline pfn_vkDestroyPipeline;
+static PFN_vkCreateDescriptorPool pfn_vkCreateDescriptorPool;
+static PFN_vkDestroyDescriptorPool pfn_vkDestroyDescriptorPool;
+static PFN_vkAllocateDescriptorSets pfn_vkAllocateDescriptorSets;
+static PFN_vkUpdateDescriptorSets pfn_vkUpdateDescriptorSets;
+static PFN_vkCreateCommandPool pfn_vkCreateCommandPool;
+static PFN_vkDestroyCommandPool pfn_vkDestroyCommandPool;
+static PFN_vkAllocateCommandBuffers pfn_vkAllocateCommandBuffers;
+static PFN_vkCreateFence pfn_vkCreateFence;
+static PFN_vkDestroyFence pfn_vkDestroyFence;
+static PFN_vkCreateQueryPool pfn_vkCreateQueryPool;
+static PFN_vkDestroyQueryPool pfn_vkDestroyQueryPool;
+static PFN_vkResetCommandBuffer pfn_vkResetCommandBuffer;
+static PFN_vkResetFences pfn_vkResetFences;
+static PFN_vkBeginCommandBuffer pfn_vkBeginCommandBuffer;
+static PFN_vkEndCommandBuffer pfn_vkEndCommandBuffer;
+static PFN_vkCmdResetQueryPool pfn_vkCmdResetQueryPool;
+static PFN_vkCmdWriteTimestamp pfn_vkCmdWriteTimestamp;
+static PFN_vkCmdBindPipeline pfn_vkCmdBindPipeline;
+static PFN_vkCmdBindDescriptorSets pfn_vkCmdBindDescriptorSets;
+static PFN_vkCmdPushConstants pfn_vkCmdPushConstants;
+static PFN_vkCmdDispatch pfn_vkCmdDispatch;
+static PFN_vkQueueSubmit pfn_vkQueueSubmit;
+static PFN_vkWaitForFences pfn_vkWaitForFences;
+static PFN_vkGetQueryPoolResults pfn_vkGetQueryPoolResults;
+
+// ---- trampolines (same names as the real Vulkan functions, so the rest
+// of this file and the Go code below need no changes at all) ----
+static inline VkResult vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance) {
+	return pfn_vkCreateInstance(pCreateInfo, pAllocator, pInstance);
+}
+static inline VkResult vkEnumerateInstanceExtensionProperties(const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
+	return pfn_vkEnumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties);
+}
+static inline void vkDestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyInstance(instance, pAllocator);
+}
+static inline VkResult vkEnumeratePhysicalDevices(VkInstance instance, uint32_t* pPhysicalDeviceCount, VkPhysicalDevice* pPhysicalDevices) {
+	return pfn_vkEnumeratePhysicalDevices(instance, pPhysicalDeviceCount, pPhysicalDevices);
+}
+static inline void vkGetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties) {
+	pfn_vkGetPhysicalDeviceProperties(physicalDevice, pProperties);
+}
+static inline void vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties) {
+	pfn_vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, pQueueFamilyPropertyCount, pQueueFamilyProperties);
+}
+static inline void vkGetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties) {
+	pfn_vkGetPhysicalDeviceMemoryProperties(physicalDevice, pMemoryProperties);
+}
+static inline VkResult vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice) {
+	return pfn_vkCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
+}
+static inline PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+	return pfn_vkGetDeviceProcAddr(device, pName);
+}
+static inline void vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue) {
+	pfn_vkGetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
+}
+static inline void vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyDevice(device, pAllocator);
+}
+static inline VkResult vkCreateBuffer(VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer) {
+	return pfn_vkCreateBuffer(device, pCreateInfo, pAllocator, pBuffer);
+}
+static inline void vkDestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyBuffer(device, buffer, pAllocator);
+}
+static inline void vkGetBufferMemoryRequirements(VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements) {
+	pfn_vkGetBufferMemoryRequirements(device, buffer, pMemoryRequirements);
+}
+static inline VkResult vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory) {
+	return pfn_vkAllocateMemory(device, pAllocateInfo, pAllocator, pMemory);
+}
+static inline void vkFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkFreeMemory(device, memory, pAllocator);
+}
+static inline VkResult vkBindBufferMemory(VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset) {
+	return pfn_vkBindBufferMemory(device, buffer, memory, memoryOffset);
+}
+static inline VkResult vkMapMemory(VkDevice device, VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize size, VkMemoryMapFlags flags, void** ppData) {
+	return pfn_vkMapMemory(device, memory, offset, size, flags, ppData);
+}
+static inline void vkUnmapMemory(VkDevice device, VkDeviceMemory memory) {
+	pfn_vkUnmapMemory(device, memory);
+}
+static inline VkResult vkCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule) {
+	return pfn_vkCreateShaderModule(device, pCreateInfo, pAllocator, pShaderModule);
+}
+static inline void vkDestroyShaderModule(VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyShaderModule(device, shaderModule, pAllocator);
+}
+static inline VkResult vkCreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout) {
+	return pfn_vkCreateDescriptorSetLayout(device, pCreateInfo, pAllocator, pSetLayout);
+}
+static inline void vkDestroyDescriptorSetLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyDescriptorSetLayout(device, descriptorSetLayout, pAllocator);
+}
+static inline VkResult vkCreatePipelineLayout(VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout) {
+	return pfn_vkCreatePipelineLayout(device, pCreateInfo, pAllocator, pPipelineLayout);
+}
+static inline void vkDestroyPipelineLayout(VkDevice device, VkPipelineLayout pipelineLayout, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyPipelineLayout(device, pipelineLayout, pAllocator);
+}
+static inline VkResult vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines) {
+	return pfn_vkCreateComputePipelines(device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+}
+static inline void vkDestroyPipeline(VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyPipeline(device, pipeline, pAllocator);
+}
+static inline VkResult vkCreateDescriptorPool(VkDevice device, const VkDescriptorPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorPool* pDescriptorPool) {
+	return pfn_vkCreateDescriptorPool(device, pCreateInfo, pAllocator, pDescriptorPool);
+}
+static inline void vkDestroyDescriptorPool(VkDevice device, VkDescriptorPool descriptorPool, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyDescriptorPool(device, descriptorPool, pAllocator);
+}
+static inline VkResult vkAllocateDescriptorSets(VkDevice device, const VkDescriptorSetAllocateInfo* pAllocateInfo, VkDescriptorSet* pDescriptorSets) {
+	return pfn_vkAllocateDescriptorSets(device, pAllocateInfo, pDescriptorSets);
+}
+static inline void vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies) {
+	pfn_vkUpdateDescriptorSets(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+}
+static inline VkResult vkCreateCommandPool(VkDevice device, const VkCommandPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkCommandPool* pCommandPool) {
+	return pfn_vkCreateCommandPool(device, pCreateInfo, pAllocator, pCommandPool);
+}
+static inline void vkDestroyCommandPool(VkDevice device, VkCommandPool commandPool, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyCommandPool(device, commandPool, pAllocator);
+}
+static inline VkResult vkAllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo, VkCommandBuffer* pCommandBuffers) {
+	return pfn_vkAllocateCommandBuffers(device, pAllocateInfo, pCommandBuffers);
+}
+static inline VkResult vkCreateFence(VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence) {
+	return pfn_vkCreateFence(device, pCreateInfo, pAllocator, pFence);
+}
+static inline void vkDestroyFence(VkDevice device, VkFence fence, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyFence(device, fence, pAllocator);
+}
+static inline VkResult vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkQueryPool* pQueryPool) {
+	return pfn_vkCreateQueryPool(device, pCreateInfo, pAllocator, pQueryPool);
+}
+static inline void vkDestroyQueryPool(VkDevice device, VkQueryPool queryPool, const VkAllocationCallbacks* pAllocator) {
+	pfn_vkDestroyQueryPool(device, queryPool, pAllocator);
+}
+static inline VkResult vkResetCommandBuffer(VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags) {
+	return pfn_vkResetCommandBuffer(commandBuffer, flags);
+}
+static inline VkResult vkResetFences(VkDevice device, uint32_t fenceCount, const VkFence* pFences) {
+	return pfn_vkResetFences(device, fenceCount, pFences);
+}
+static inline VkResult vkBeginCommandBuffer(VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo* pBeginInfo) {
+	return pfn_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
+}
+static inline VkResult vkEndCommandBuffer(VkCommandBuffer commandBuffer) {
+	return pfn_vkEndCommandBuffer(commandBuffer);
+}
+static inline void vkCmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount) {
+	pfn_vkCmdResetQueryPool(commandBuffer, queryPool, firstQuery, queryCount);
+}
+static inline void vkCmdWriteTimestamp(VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool queryPool, uint32_t query) {
+	pfn_vkCmdWriteTimestamp(commandBuffer, pipelineStage, queryPool, query);
+}
+static inline void vkCmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline) {
+	pfn_vkCmdBindPipeline(commandBuffer, pipelineBindPoint, pipeline);
+}
+static inline void vkCmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets) {
+	pfn_vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+}
+static inline void vkCmdPushConstants(VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues) {
+	pfn_vkCmdPushConstants(commandBuffer, layout, stageFlags, offset, size, pValues);
+}
+static inline void vkCmdDispatch(VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
+	pfn_vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
+}
+static inline VkResult vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence) {
+	return pfn_vkQueueSubmit(queue, submitCount, pSubmits, fence);
+}
+static inline VkResult vkWaitForFences(VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout) {
+	return pfn_vkWaitForFences(device, fenceCount, pFences, waitAll, timeout);
+}
+static inline VkResult vkGetQueryPoolResults(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* pData, VkDeviceSize stride, VkQueryResultFlags flags) {
+	return pfn_vkGetQueryPoolResults(device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+}
+
+// gountlet_vk_load_global resolves the handful of functions usable before
+// any VkInstance exists. Returns 1 on success.
+static int gountlet_vk_load_global(void) {
+	pfn_vkCreateInstance = (PFN_vkCreateInstance)pfn_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+	pfn_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)pfn_vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceExtensionProperties");
+	return pfn_vkCreateInstance && pfn_vkEnumerateInstanceExtensionProperties;
+}
+
+// gountlet_vk_load_instance resolves every function reachable once an
+// instance exists, including vkGetDeviceProcAddr itself.
+static void gountlet_vk_load_instance(VkInstance instance) {
+	pfn_vkDestroyInstance = (PFN_vkDestroyInstance)pfn_vkGetInstanceProcAddr(instance, "vkDestroyInstance");
+	pfn_vkEnumeratePhysicalDevices = (PFN_vkEnumeratePhysicalDevices)pfn_vkGetInstanceProcAddr(instance, "vkEnumeratePhysicalDevices");
+	pfn_vkGetPhysicalDeviceProperties = (PFN_vkGetPhysicalDeviceProperties)pfn_vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties");
+	pfn_vkGetPhysicalDeviceQueueFamilyProperties = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)pfn_vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+	pfn_vkGetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)pfn_vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties");
+	pfn_vkCreateDevice = (PFN_vkCreateDevice)pfn_vkGetInstanceProcAddr(instance, "vkCreateDevice");
+	pfn_vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)pfn_vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
+}
+
+// gountlet_vk_load_device resolves every device-level function once a
+// VkDevice exists.
+static void gountlet_vk_load_device(VkDevice device) {
+	pfn_vkGetDeviceQueue = (PFN_vkGetDeviceQueue)pfn_vkGetDeviceProcAddr(device, "vkGetDeviceQueue");
+	pfn_vkDestroyDevice = (PFN_vkDestroyDevice)pfn_vkGetDeviceProcAddr(device, "vkDestroyDevice");
+	pfn_vkCreateBuffer = (PFN_vkCreateBuffer)pfn_vkGetDeviceProcAddr(device, "vkCreateBuffer");
+	pfn_vkDestroyBuffer = (PFN_vkDestroyBuffer)pfn_vkGetDeviceProcAddr(device, "vkDestroyBuffer");
+	pfn_vkGetBufferMemoryRequirements = (PFN_vkGetBufferMemoryRequirements)pfn_vkGetDeviceProcAddr(device, "vkGetBufferMemoryRequirements");
+	pfn_vkAllocateMemory = (PFN_vkAllocateMemory)pfn_vkGetDeviceProcAddr(device, "vkAllocateMemory");
+	pfn_vkFreeMemory = (PFN_vkFreeMemory)pfn_vkGetDeviceProcAddr(device, "vkFreeMemory");
+	pfn_vkBindBufferMemory = (PFN_vkBindBufferMemory)pfn_vkGetDeviceProcAddr(device, "vkBindBufferMemory");
+	pfn_vkMapMemory = (PFN_vkMapMemory)pfn_vkGetDeviceProcAddr(device, "vkMapMemory");
+	pfn_vkUnmapMemory = (PFN_vkUnmapMemory)pfn_vkGetDeviceProcAddr(device, "vkUnmapMemory");
+	pfn_vkCreateShaderModule = (PFN_vkCreateShaderModule)pfn_vkGetDeviceProcAddr(device, "vkCreateShaderModule");
+	pfn_vkDestroyShaderModule = (PFN_vkDestroyShaderModule)pfn_vkGetDeviceProcAddr(device, "vkDestroyShaderModule");
+	pfn_vkCreateDescriptorSetLayout = (PFN_vkCreateDescriptorSetLayout)pfn_vkGetDeviceProcAddr(device, "vkCreateDescriptorSetLayout");
+	pfn_vkDestroyDescriptorSetLayout = (PFN_vkDestroyDescriptorSetLayout)pfn_vkGetDeviceProcAddr(device, "vkDestroyDescriptorSetLayout");
+	pfn_vkCreatePipelineLayout = (PFN_vkCreatePipelineLayout)pfn_vkGetDeviceProcAddr(device, "vkCreatePipelineLayout");
+	pfn_vkDestroyPipelineLayout = (PFN_vkDestroyPipelineLayout)pfn_vkGetDeviceProcAddr(device, "vkDestroyPipelineLayout");
+	pfn_vkCreateComputePipelines = (PFN_vkCreateComputePipelines)pfn_vkGetDeviceProcAddr(device, "vkCreateComputePipelines");
+	pfn_vkDestroyPipeline = (PFN_vkDestroyPipeline)pfn_vkGetDeviceProcAddr(device, "vkDestroyPipeline");
+	pfn_vkCreateDescriptorPool = (PFN_vkCreateDescriptorPool)pfn_vkGetDeviceProcAddr(device, "vkCreateDescriptorPool");
+	pfn_vkDestroyDescriptorPool = (PFN_vkDestroyDescriptorPool)pfn_vkGetDeviceProcAddr(device, "vkDestroyDescriptorPool");
+	pfn_vkAllocateDescriptorSets = (PFN_vkAllocateDescriptorSets)pfn_vkGetDeviceProcAddr(device, "vkAllocateDescriptorSets");
+	pfn_vkUpdateDescriptorSets = (PFN_vkUpdateDescriptorSets)pfn_vkGetDeviceProcAddr(device, "vkUpdateDescriptorSets");
+	pfn_vkCreateCommandPool = (PFN_vkCreateCommandPool)pfn_vkGetDeviceProcAddr(device, "vkCreateCommandPool");
+	pfn_vkDestroyCommandPool = (PFN_vkDestroyCommandPool)pfn_vkGetDeviceProcAddr(device, "vkDestroyCommandPool");
+	pfn_vkAllocateCommandBuffers = (PFN_vkAllocateCommandBuffers)pfn_vkGetDeviceProcAddr(device, "vkAllocateCommandBuffers");
+	pfn_vkCreateFence = (PFN_vkCreateFence)pfn_vkGetDeviceProcAddr(device, "vkCreateFence");
+	pfn_vkDestroyFence = (PFN_vkDestroyFence)pfn_vkGetDeviceProcAddr(device, "vkDestroyFence");
+	pfn_vkCreateQueryPool = (PFN_vkCreateQueryPool)pfn_vkGetDeviceProcAddr(device, "vkCreateQueryPool");
+	pfn_vkDestroyQueryPool = (PFN_vkDestroyQueryPool)pfn_vkGetDeviceProcAddr(device, "vkDestroyQueryPool");
+	pfn_vkResetCommandBuffer = (PFN_vkResetCommandBuffer)pfn_vkGetDeviceProcAddr(device, "vkResetCommandBuffer");
+	pfn_vkResetFences = (PFN_vkResetFences)pfn_vkGetDeviceProcAddr(device, "vkResetFences");
+	pfn_vkBeginCommandBuffer = (PFN_vkBeginCommandBuffer)pfn_vkGetDeviceProcAddr(device, "vkBeginCommandBuffer");
+	pfn_vkEndCommandBuffer = (PFN_vkEndCommandBuffer)pfn_vkGetDeviceProcAddr(device, "vkEndCommandBuffer");
+	pfn_vkCmdResetQueryPool = (PFN_vkCmdResetQueryPool)pfn_vkGetDeviceProcAddr(device, "vkCmdResetQueryPool");
+	pfn_vkCmdWriteTimestamp = (PFN_vkCmdWriteTimestamp)pfn_vkGetDeviceProcAddr(device, "vkCmdWriteTimestamp");
+	pfn_vkCmdBindPipeline = (PFN_vkCmdBindPipeline)pfn_vkGetDeviceProcAddr(device, "vkCmdBindPipeline");
+	pfn_vkCmdBindDescriptorSets = (PFN_vkCmdBindDescriptorSets)pfn_vkGetDeviceProcAddr(device, "vkCmdBindDescriptorSets");
+	pfn_vkCmdPushConstants = (PFN_vkCmdPushConstants)pfn_vkGetDeviceProcAddr(device, "vkCmdPushConstants");
+	pfn_vkCmdDispatch = (PFN_vkCmdDispatch)pfn_vkGetDeviceProcAddr(device, "vkCmdDispatch");
+	pfn_vkQueueSubmit = (PFN_vkQueueSubmit)pfn_vkGetDeviceProcAddr(device, "vkQueueSubmit");
+	pfn_vkWaitForFences = (PFN_vkWaitForFences)pfn_vkGetDeviceProcAddr(device, "vkWaitForFences");
+	pfn_vkGetQueryPoolResults = (PFN_vkGetQueryPoolResults)pfn_vkGetDeviceProcAddr(device, "vkGetQueryPoolResults");
+}
+
+static gountlet_lib_t gountlet_vk_lib;
+
+// gountlet_vk_init dlopen's the platform's Vulkan loader and resolves the
+// handful of functions callable before an instance exists. Returns 1 on
+// success, 0 if the loader isn't installed on this machine — callers use
+// that to report GPU benchmarking as unavailable instead of the whole
+// binary refusing to start, which is what linking -lvulkan at build time
+// used to cause on any machine without the loader (e.g. a Raspberry Pi
+// with no Vulkan install, just trying to run the CPU benchmark).
+static int gountlet_vk_init(void) {
+	gountlet_vk_lib = gountlet_dlopen();
+	if (!gountlet_vk_lib) return 0;
+	pfn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)gountlet_dlsym(gountlet_vk_lib, "vkGetInstanceProcAddr");
+	if (!pfn_vkGetInstanceProcAddr) return 0;
+	return gountlet_vk_load_global();
+}
+
+static void gountlet_vk_close(void) {
+	if (gountlet_vk_lib) {
+		gountlet_dlclose(gountlet_vk_lib);
+		gountlet_vk_lib = NULL;
+	}
+}
 
 static VkResult gountlet_create_instance(VkInstance *instance) {
 	VkApplicationInfo appInfo;
@@ -182,12 +516,19 @@ func vkErr(op string, res C.VkResult) error {
 // the (calibrated) compute dispatch runs for.
 func Run(duration time.Duration) bench.Result {
 	name := "gpu"
+
+	if C.gountlet_vk_init() == 0 {
+		return bench.Fail(name, fmt.Errorf("no Vulkan loader found (install libvulkan.so.1 / vulkan-1.dll / libvulkan.dylib to enable GPU benchmarking)"))
+	}
+	defer C.gountlet_vk_close()
+
 	c := &ctx{}
 	defer c.destroy()
 
 	if res := C.gountlet_create_instance(&c.instance); res != C.VK_SUCCESS {
 		return bench.Fail(name, vkErr("vkCreateInstance", res))
 	}
+	C.gountlet_vk_load_instance(c.instance)
 
 	sel, err := pickDevice(c.instance)
 	if err != nil {
@@ -362,6 +703,7 @@ func (c *ctx) createDevice(physDevice C.VkPhysicalDevice) error {
 	if res := C.vkCreateDevice(physDevice, &dci, nil, &c.device); res != C.VK_SUCCESS {
 		return vkErr("vkCreateDevice", res)
 	}
+	C.gountlet_vk_load_device(c.device)
 	C.vkGetDeviceQueue(c.device, c.queueFamily, 0, &c.queue)
 	return nil
 }

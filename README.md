@@ -7,7 +7,9 @@
 
 Cross-platform (Linux/macOS/Windows) performance benchmark: CPU (single-core
 and multi-core), memory, disk, network, and GPU compute — one static-ish Go
-binary, no external dependencies at runtime beyond your GPU's Vulkan loader.
+binary with no required runtime dependencies; the GPU benchmark additionally
+uses your system's Vulkan loader if one is installed, and simply reports
+itself unavailable if not.
 
 ## Build
 
@@ -15,37 +17,22 @@ binary, no external dependencies at runtime beyond your GPU's Vulkan loader.
 go build ./cmd/gountlet
 ```
 
-Requires a C compiler (`CGO_ENABLED=1`, the default) and a Vulkan loader to
-build the GPU benchmark. Build natively on each target OS — Linux, macOS,
-and Windows each need their own toolchain (gcc/clang, Xcode command line
-tools, or MSVC/mingw-w64 respectively) since cgo cross-compilation isn't
-practical here. If you build with `CGO_ENABLED=0`, everything else still
-works; the GPU benchmark just reports that it needs cgo.
+Requires a C compiler (`CGO_ENABLED=1`, the default) to build the GPU
+benchmark — nothing else. The Vulkan headers are vendored under
+`internal/bench/gpu/vk/include/`, and the Vulkan loader itself is loaded
+dynamically at runtime (`dlopen`/`LoadLibrary`, not linked at build time —
+see [GPU benchmark internals](#gpu-benchmark-internals)), so no Vulkan SDK
+or loader package needs to be installed to build on any platform. Build
+natively on each target OS — Linux, macOS, and Windows each need their own
+C toolchain (gcc/clang, Xcode command line tools, or MinGW-w64
+respectively) since cgo cross-compilation isn't practical here. If you
+build with `CGO_ENABLED=0`, everything else still works; the GPU benchmark
+just reports that it needs cgo.
 
-**Linux:** install a Vulkan loader dev package, e.g. `sudo apt install
-libvulkan-dev` (Debian/Ubuntu) — it's on the default linker search path, so
-that's all you need.
-
-**macOS:** `brew install vulkan-loader molten-vk`, then point cgo at
-Homebrew's prefix explicitly — on Apple Silicon it's `/opt/homebrew`, which
-isn't in clang's default search path (unlike Intel's `/usr/local`), so
-`-lvulkan` fails to link without this even with the loader installed:
-
-```sh
-export CGO_CFLAGS="-I$(brew --prefix vulkan-loader)/include"
-export CGO_LDFLAGS="-L$(brew --prefix vulkan-loader)/lib"
-go build ./cmd/gountlet
-```
-
-**Windows:** install the [Vulkan SDK](https://vulkan.lunarg.com/) and
-MinGW-w64 (cgo needs gcc, not MSVC), then point cgo at the SDK — adjust the
-version path to whatever you installed:
-
-```powershell
-$env:CGO_CFLAGS = "-IC:\VulkanSDK\1.4.350.0\Include"
-$env:CGO_LDFLAGS = "-LC:\VulkanSDK\1.4.350.0\Lib -lvulkan-1"
-go build ./cmd/gountlet
-```
+A Vulkan loader only needs to be *installed* on whatever machine actually
+*runs* the GPU benchmark — if it's missing, that one benchmark reports
+itself unavailable and every other benchmark still runs normally (see
+[GPU benchmark internals](#gpu-benchmark-internals)).
 
 ## Run
 
@@ -64,19 +51,30 @@ go build ./cmd/gountlet
 ./gountlet -stress          # each timed benchmark runs for 5m instead of 3s
 ```
 
-Run `gountlet` bare in a terminal with no flags and it walks you through
-picking benchmarks, duration, and output format interactively instead of
-requiring a pile of flags. Pass any flag (or pipe/redirect stdin) and it
-skips the prompt and behaves like a normal CLI — that's what scripts and CI
-should do.
+Run `gountlet` bare in a terminal with no flags and it launches a full
+graphical TUI: a setup screen to pick benchmarks/duration/paths (arrow keys
+or j/k to move, space to toggle a checkbox, enter to edit a field or start),
+then a live progress view, then a bar-chart results view (q to quit). Pass
+any flag (or pipe/redirect stdin) and it skips all of that and behaves like
+a normal CLI, printing a plain table — that's what scripts and CI should do.
+If bubbletea can't run in the attached terminal for some reason, it falls
+back automatically to a plain line-by-line text prompt rather than failing
+outright.
 
 Flags: `-cpu -mem -disk -net -gpu -all` select which benchmarks run (default:
-all). `-disk-path <dir>` picks where the disk benchmark's temp file goes
-(default OS temp dir). `-net-target host:port` points the network benchmark
-at a `gountlet -net-serve` instance on another machine instead of the default
+all — passing any of these also skips straight to plain-text output, no TUI).
+`-disk-path <dir>` picks where the disk benchmark's temp file goes (default
+OS temp dir). `-net-target host:port` points the network benchmark at a
+`gountlet -net-serve` instance on another machine instead of the default
 loopback self-test. `-stress` runs each timed benchmark for 5 minutes instead
 of the default 3 seconds, for burn-in/thermal-throttling checks under
 sustained load rather than a quick snapshot; an explicit `-duration` overrides it.
+
+`-tui` shows the same live progress + bar-chart results view as the bare
+invocation, but for a flag-driven run — skips the setup screen since the
+flags already answered those questions. `-html <path>` writes a
+self-contained HTML report (bar charts, inline CSS, no JS) alongside
+whatever else you asked for; works with or without `-tui`.
 
 `-duration`/`-stress` apply to every benchmark, not just CPU: memory and
 disk run at least one full pass over their fixed-size buffer/file and then
@@ -119,11 +117,12 @@ for `-all` is roughly (duration × ~12 phases) — `-stress -all` is a
   fused multiply-adds per element and reports GFLOPS, plus the selected
   device's name. Needs the platform's Vulkan runtime loader installed
   (`libvulkan.so.1` / `vulkan-1.dll` / `libvulkan.dylib` via MoltenVK on
-  macOS) — no display or windowing system required. Timing uses GPU
-  timestamp queries (pure on-device execution time) where the device
-  supports them, falling back to CPU wall-clock — which also captures
-  some driver/submission overhead — otherwise; the result's `timing`
-  field says which was used.
+  macOS) — no display or windowing system required. If the loader isn't
+  installed, only this benchmark fails (with a clear error); every other
+  benchmark is unaffected. Timing uses GPU timestamp queries (pure
+  on-device execution time) where the device supports them, falling back
+  to CPU wall-clock — which also captures some driver/submission
+  overhead — otherwise; the result's `timing` field says which was used.
 
 ## Result context and device info
 
@@ -166,9 +165,22 @@ well-established real-world ranges, not an invented precision score:
 
 The Vulkan headers needed to build (`vulkan_core.h`, `vk_platform.h`, and the
 `vk_video/*` headers it pulls in) are vendored under
-`internal/bench/gpu/vk/include/` so building only requires the Vulkan
-*runtime loader*, not the full Vulkan SDK. See
-`internal/bench/gpu/vk/LICENSE` for their license (Khronos, Apache-2.0/MIT).
+`internal/bench/gpu/vk/include/`. See `internal/bench/gpu/vk/LICENSE` for
+their license (Khronos, Apache-2.0/MIT).
+
+The Vulkan loader itself is **not** linked at build time — the binary
+never has a hard `libvulkan.so.1`/`vulkan-1.dll`/`libvulkan.dylib`
+dependency, so it always starts, on any machine, GPU loader present or
+not. Instead, `Run()` calls `dlopen`/`LoadLibraryA` on the loader at the
+start of the GPU benchmark and resolves every Vulkan function it needs
+through `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr` (the header is
+compiled with `VK_NO_PROTOTYPES`, so nothing pulls in the real symbols at
+link time). If the loader can't be found, `Run()` returns a normal failed
+result for the `gpu` benchmark only — every other benchmark, and the
+binary's ability to start at all, is unaffected. This is what fixes
+`gountlet` failing to even launch (`error while loading shared libraries:
+libvulkan.so.1: cannot open shared object file`) on machines like a
+Raspberry Pi that have no Vulkan loader installed.
 
 ## CI/CD and releases
 
